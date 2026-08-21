@@ -29,6 +29,8 @@ Sign up at **[observe.nestjs.com](https://observe.nestjs.com)** and create a
 service. The dashboard issues an **app key** and an **app secret**, which the
 agent sends on every ingest request.
 
+**Free for up to 300,000 events a month**, which covers most individual projects, startups, and small applications.
+
 The secret is shown once and is not retrievable afterwards - store it with the
 rest of your secrets and supply both from the environment:
 
