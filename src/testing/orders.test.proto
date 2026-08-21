@@ -1,0 +1,24 @@
+// Minimal service for the gRPC collection suite. Deliberately tiny: the suite
+// is about whether the agent traces a gRPC call, not about protobuf features.
+syntax = "proto3";
+
+package orderstest;
+
+service Orders {
+  rpc FindOne (OrderById) returns (Order) {}
+  rpc Ping (OrderById) returns (Order) {}
+  rpc Explode (OrderById) returns (Order) {}
+  rpc Reject (OrderById) returns (Order) {}
+  rpc Decline (OrderById) returns (Order) {}
+  rpc ExplodeAsync (OrderById) returns (Order) {}
+  rpc RejectAsync (OrderById) returns (Order) {}
+}
+
+message OrderById {
+  string id = 1;
+}
+
+message Order {
+  string id = 1;
+  string name = 2;
+}

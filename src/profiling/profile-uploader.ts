@@ -1,0 +1,175 @@
+import { ProfileWindow } from "./cpu-profiler.service.js";
+
+/**
+ * Windows held while uploads are failing.
+ *
+ * Small on purpose. A profile window is diagnostic data with a short shelf
+ * life, and the backend caps retention at fourteen days anyway - queueing
+ * hours of them through an outage would spend the customer's memory on stacks
+ * nobody will look at. Two windows covers a restart of the collector; beyond
+ * that the oldest is dropped.
+ */
+const MAX_PENDING_WINDOWS = 2;
+
+export interface ProfileUploaderOptions {
+  endpoint: string;
+  serviceNode: string;
+  /** Ingest credentials, as sent by the telemetry half of the agent. */
+  appKey?: string;
+  appSecret?: string;
+  onError?: (message: string) => void;
+}
+
+/**
+ * Ships one folded-stack window per upload.
+ *
+ * Deliberately not routed through the agent's shared buffer. That buffer exists
+ * to batch high-frequency telemetry into one flush every few seconds; profiles
+ * are one request a minute against a different endpoint, and squeezing them
+ * through it would couple the profile cadence to the telemetry flush and put a
+ * megabyte of stacks into a ring sized for spans.
+ */
+export class ProfileUploader {
+  private readonly pending: Array<{
+    window: ProfileWindow;
+    sampleRateHz: number;
+  }> = [];
+
+  private inFlight = false;
+
+  constructor(private readonly options: ProfileUploaderOptions) {}
+
+  enqueue(window: ProfileWindow, sampleRateHz: number): void {
+    if (window.stacks.length === 0) {
+      return;
+    }
+    if (this.pending.length >= MAX_PENDING_WINDOWS) {
+      this.pending.shift();
+    }
+    this.pending.push({ window, sampleRateHz });
+    void this.drain();
+  }
+
+  /**
+   * Sends everything queued, oldest first.
+   *
+   * Serialised: two windows in flight at once would interleave against a
+   * backend that keys rows on window start, and the second would arrive as a
+   * duplicate rather than an addition.
+   */
+  async drain(): Promise<void> {
+    if (this.inFlight) {
+      return;
+    }
+    this.inFlight = true;
+
+    try {
+      while (this.pending.length > 0) {
+        const next = this.pending[0];
+        const sent = await this.send(next.window, next.sampleRateHz);
+        if (!sent) {
+          // Left at the head to be retried by the next window's drain. Failing
+          // uploads must not spin: there is no timer here, only the natural
+          // once-a-minute cadence.
+          break;
+        }
+        this.pending.shift();
+      }
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private async send(
+    window: ProfileWindow,
+    sampleRateHz: number,
+  ): Promise<boolean> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    // Omitted rather than sent empty when unconfigured, so a collector running
+    // in placeholder mode still accepts the upload.
+    if (this.options.appKey && this.options.appSecret) {
+      headers["x-api-key"] = this.options.appKey;
+      headers["x-api-secret"] = this.options.appSecret;
+    }
+
+    try {
+      const response = await fetch(
+        `${this.options.endpoint}/applications/profiles`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            serviceNode: this.options.serviceNode,
+            // The rate actually used, not the nominal one: a throttled agent
+            // sampling slower would otherwise have every duration on the page
+            // overstated.
+            sampleRateHz,
+            windows: [window],
+          }),
+        },
+      );
+
+      if (
+        response.status === 403 &&
+        (await this.isEntitlementError(response))
+      ) {
+        // The plan does not include profiling. Dropped rather than retried -
+        // the answer will not change on the next attempt, and the profiler is
+        // stopped by the caller that owns the entitlement.
+        this.options.onError?.(
+          "profiling is not included in this plan; discarding the window",
+        );
+        return true;
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        // A credential problem, not an entitlement one. Reported specifically
+        // and not discarded: it is a misconfiguration the operator can fix,
+        // and treating it as "not in your plan" would throw the window away
+        // and describe the cause wrongly.
+        this.options.onError?.(
+          `profile upload rejected (${response.status}); check that appKey and appSecret are valid - the application is taken from the key`,
+        );
+        return false;
+      }
+
+      if (!response.ok) {
+        this.options.onError?.(
+          `profile upload failed: ${response.status} ${response.statusText}`,
+        );
+        return false;
+      }
+      return true;
+    } catch (err) {
+      // Network failures are expected and must never surface into the
+      // application: an agent that throws into a customer's request path over
+      // its own telemetry is worse than one that loses a window.
+      this.options.onError?.(`profile upload failed: ${String(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Whether a 403 is "your plan does not include profiling" rather than "your
+   * key may not write here".
+   *
+   * Keyed on the machine-readable `code` the collector sends for exactly this
+   * purpose, not on the message. A body that cannot be read or does not carry
+   * the code is treated as a credential failure - the safe way round, since
+   * that path retries and the entitlement path discards.
+   */
+  private async isEntitlementError(response: Response): Promise<boolean> {
+    try {
+      const body = (await response.clone().json()) as { code?: string };
+      return body?.code === "ENTITLEMENT_REQUIRED";
+    } catch {
+      return false;
+    }
+  }
+
+  pendingCount(): number {
+    return this.pending.length;
+  }
+}

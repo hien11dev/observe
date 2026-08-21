@@ -1,0 +1,26 @@
+.idea/
+.circleci
+.github/**/*
+.husky/**/*
+.gitignore
+.prettierrc
+.commitlintrc.json
+node_modules/
+.DS_Store
+CONTRIBUTE.md
+*.tsbuildinfo
+
+# source
+/src
+/coverage
+
+# configuration
+renovate.json
+tsconfig.json
+tsconfig.build.json
+vitest.config.ts
+vitest.int.config.ts
+vitest.setup.ts
+.oxlintrc.json
+.release-it.json
+/.vscode

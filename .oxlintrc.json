@@ -1,0 +1,62 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "unicorn",
+    "oxc"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "env": {
+    "node": true,
+    "es2023": true
+  },
+  "ignorePatterns": [
+    "dist",
+    "coverage",
+    "**/*.d.ts"
+  ],
+  "rules": {
+    "typescript/no-explicit-any": "off",
+    "typescript/no-non-null-assertion": "off",
+    "typescript/no-namespace": "off",
+    "no-unused-vars": "off",
+    "typescript/no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_"
+      }
+    ],
+    "no-underscore-dangle": "off",
+    "typescript/no-extraneous-class": "off",
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-array-reverse": "off",
+    "unicorn/require-post-message-target-origin": "off",
+    "no-await-in-loop": "off",
+    "typescript/no-useless-default-assignment": "off",
+    "typescript/unbound-method": "warn",
+    "typescript/no-floating-promises": "warn",
+    "typescript/restrict-template-expressions": "warn",
+    "typescript/no-base-to-string": "warn",
+    "typescript/no-redundant-type-constituents": "warn",
+    "typescript/no-unsafe-type-assertion": "off",
+    "typescript/no-unnecessary-type-assertion": "off",
+    "typescript/no-unnecessary-boolean-literal-compare": "off"
+  },
+  "overrides": [
+    {
+      "files": [
+        "**/*.spec.ts",
+        "**/*.int-spec.ts",
+        "src/testing/**"
+      ],
+      "rules": {
+        "typescript/no-empty-function": "off",
+        "unicorn/consistent-function-scoping": "off"
+      }
+    }
+  ]
+}

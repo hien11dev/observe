@@ -1,0 +1,110 @@
+<p align="center">
+  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
+</p>
+
+  <p align="center">A progressive <a href="http://nodejs.org" target="blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
+    <p align="center">
+<a href="https://www.npmjs.com/~nestjscore"><img src="https://img.shields.io/npm/v/@nestjs/common.svg" alt="NPM Version" /></a>
+<a href="https://www.npmjs.com/~nestjscore"><img src="https://img.shields.io/npm/l/@nestjs/common.svg" alt="Package License" /></a>
+<a href="https://www.npmjs.com/~nestjscore"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
+<a href="https://coveralls.io/github/nestjs/nest?branch=master" target="_blank"><img src="https://coveralls.io/repos/github/nestjs/nest/badge.svg?branch=master#9" alt="Coverage" /></a>
+<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
+<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
+<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
+  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg"/></a>
+  <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
+  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow"></a>
+
+## Description
+
+`@nestjs/observe` is an observability module for [NestJS](https://nestjs.com) applications. It instruments HTTP, GraphQL, microservice (RPC), and BullMQ queue handlers, collects traces, runtime metrics, custom metrics, and CPU profiles, and ships them to a collector from a detached worker thread so the request path stays untouched.
+
+```bash
+$ npm install @nestjs/observe
+```
+
+## Quick start
+
+`createObserveModule()` returns both the dynamic module and the instrumentation
+hook Nest needs at bootstrap:
+
+```ts
+// observe.ts
+import { createObserveModule } from "@nestjs/observe";
+
+export const { ObserveModule, ObserveInstrument } = createObserveModule();
+```
+
+```ts
+// app.module.ts
+import { Module } from "@nestjs/common";
+import { ObserveModule } from "./observe";
+
+@Module({
+  imports: [
+    ObserveModule.forRoot({
+      appKey: process.env.OBSERVE_APP_KEY,
+      appSecret: process.env.OBSERVE_APP_SECRET,
+      serviceId: process.env.OBSERVE_SERVICE_ID,
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+```ts
+// main.ts
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "./app.module";
+import { ObserveInstrument } from "./observe";
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule, {
+    instrument: ObserveInstrument,
+  });
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+`ObserveModule.forRootAsync()` is available when the options have to be resolved
+from a provider (for example `ConfigService`).
+
+## Optional peer dependencies
+
+Protocol integrations are only loaded when you use them, and their packages are optional peers:
+
+- `@nestjs/microservices` - RPC/microservice instrumentation
+- `@nestjs/graphql` - GraphQL operation instrumentation
+- `@nestjs/bullmq` and `bullmq` - queue/job instrumentation
+
+## Test
+
+```bash
+# unit tests
+$ npm test
+
+# integration tests (boot real Nest apps on real ports)
+$ npm run test:int
+```
+
+## Module format
+
+The package ships as ESM only. CommonJS consumers can still `require()` it
+through Node's `require(esm)` support, which is why the engine floor is
+**Node 20.19** (or 22.12) rather than 20.0 - and why nothing in the module graph
+uses top-level await, which `require(esm)` cannot load.
+
+```js
+// works from CommonJS on Node >= 20.19
+const { createObserveModule } = require("@nestjs/observe");
+```
+
+## Stay in touch
+
+- Website - [https://nestjs.com](https://nestjs.com/)
+- Twitter - [@nestframework](https://twitter.com/nestframework)
+
+## License
+
+Nest is [MIT licensed](LICENSE).

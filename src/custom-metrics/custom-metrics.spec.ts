@@ -1,0 +1,353 @@
+import { Counter } from "./counter.js";
+import { Gauge } from "./gauge.js";
+import { Summary } from "./summary.js";
+
+describe("Counter", () => {
+  it("starts at zero and counts up", () => {
+    const counter = new Counter("logins");
+
+    expect(counter.getValue()).toBe(0);
+    counter.increment();
+    counter.increment();
+    expect(counter.getValue()).toBe(2);
+  });
+
+  it("increments by an explicit amount", () => {
+    const counter = new Counter("bytes");
+
+    counter.increment(512);
+
+    expect(counter.getValue()).toBe(512);
+  });
+
+  it("honours an initial value", () => {
+    const counter = new Counter("resumed", "desc", 100);
+
+    counter.increment();
+
+    expect(counter.getValue()).toBe(101);
+  });
+
+  describe("labels", () => {
+    it("keeps a separate total per label", () => {
+      const counter = new Counter<"route">("requests", "desc", ["route"]);
+
+      counter.increment({ route: "/a" });
+      counter.increment({ route: "/a" });
+      counter.increment({ route: "/b" });
+
+      expect(counter.getValue({ route: "/a" })).toBe(2);
+      expect(counter.getValue({ route: "/b" })).toBe(1);
+    });
+
+    it("refuses an unlabelled increment on a labelled counter", () => {
+      const counter = new Counter<"route">("requests", "desc", ["route"]);
+
+      // Silently folding this into a "default" bucket would produce a total that
+      // belongs to no route and is double counted against the labelled ones.
+      expect(() => counter.increment()).toThrow(/without specifying a label/);
+    });
+
+    it("refuses an unlabelled read on a labelled counter", () => {
+      const counter = new Counter<"route">("requests", "desc", ["route"]);
+
+      expect(() => counter.getValue()).toThrow(/without specifying a label/);
+    });
+
+    it("rejects a label object missing a declared key", () => {
+      const counter = new Counter<"route">("requests", "desc", ["route"]);
+
+      expect(() => counter.increment({ method: "GET" } as never)).toThrow(
+        /not defined in the counter/,
+      );
+    });
+
+    it("reads back a label incremented by zero", () => {
+      const counter = new Counter<"route">("requests", "desc", ["route"]);
+
+      counter.increment({ route: "/a" }, 0);
+
+      // Presence, not truthiness: a recorded zero is a reading, not a miss.
+      expect(counter.getValue({ route: "/a" })).toBe(0);
+    });
+
+    it("rejects a label that was never recorded", () => {
+      const counter = new Counter<"route">("requests", "desc", ["route"]);
+
+      expect(() => counter.getValue({ route: "/never" })).toThrow(
+        /does not exist/,
+      );
+    });
+
+    it("treats the same label set in any key order as one series", () => {
+      const counter = new Counter<"route" | "method">("requests", "desc", [
+        "route",
+        "method",
+      ]);
+
+      counter.increment({ route: "/a", method: "GET" });
+      counter.increment({ method: "GET", route: "/a" });
+
+      // Keys are sorted before serialisation; insertion order would otherwise
+      // split one series into two and halve every total.
+      expect(counter.getValue({ method: "GET", route: "/a" })).toBe(2);
+      expect(Object.keys(counter.value)).toHaveLength(1);
+    });
+  });
+
+  describe("increase", () => {
+    it("reports everything counted before the first flush", () => {
+      const counter = new Counter("orders");
+
+      counter.increment(5);
+
+      expect(counter.increase).toEqual({ default: 5 });
+    });
+
+    it("reports only what accrued since the last flush", () => {
+      const counter = new Counter("orders");
+      counter.increment(5);
+
+      counter.markFlushed();
+      counter.increment(3);
+
+      // The backend sums increases; reporting the cumulative value each time
+      // would double count on every flush.
+      expect(counter.increase).toEqual({ default: 3 });
+    });
+
+    it("reports zero when nothing happened since the flush", () => {
+      const counter = new Counter("orders");
+      counter.increment(5);
+      counter.markFlushed();
+
+      expect(counter.increase).toEqual({ default: 0 });
+    });
+
+    it("rolls a missed flush into the next one", () => {
+      const counter = new Counter("orders");
+      counter.increment(5);
+      // No markFlushed: the agent only calls it once a flush has been written,
+      // so a failed send must not consume the increase.
+      counter.increment(3);
+
+      expect(counter.increase).toEqual({ default: 8 });
+    });
+
+    it("tracks increases per label independently", () => {
+      const counter = new Counter<"region">("sales", "desc", ["region"]);
+      counter.increment({ region: "eu" }, 10);
+      counter.increment({ region: "us" }, 20);
+      counter.markFlushed();
+
+      counter.increment({ region: "eu" }, 5);
+
+      expect(counter.increase).toEqual({
+        '{"region":"eu"}': 5,
+        '{"region":"us"}': 0,
+      });
+    });
+  });
+
+  it("records when it was last touched", () => {
+    const counter = new Counter("touched");
+    const before = counter.lastUpdated;
+
+    counter.increment();
+
+    expect(counter.lastUpdated).toBeGreaterThanOrEqual(before);
+  });
+});
+
+describe("Gauge", () => {
+  it("can be constructed with only a name", () => {
+    // The single-argument overload is declared on the class; it used to throw
+    // "Cannot read properties of undefined (reading 'labels')".
+    const gauge = new Gauge("queue_depth");
+
+    expect(gauge.getValue()).toBe(0);
+  });
+
+  it("goes up and down", () => {
+    const gauge = new Gauge("in_flight", {});
+
+    gauge.increment();
+    gauge.increment(4);
+    gauge.decrement(2);
+
+    expect(gauge.getValue()).toBe(3);
+  });
+
+  it("can go negative", () => {
+    const gauge = new Gauge("balance", {});
+
+    gauge.decrement(5);
+
+    // Unlike a counter, a gauge is a level and may legitimately sit below zero.
+    expect(gauge.getValue()).toBe(-5);
+  });
+
+  describe("setValue", () => {
+    it("sets a value on a freshly created gauge", () => {
+      const gauge = new Gauge("temperature", {});
+
+      // A gauge starts at 0, and the guard here tested truthiness - so the very
+      // first `setValue` on almost every gauge threw, claiming the default label
+      // did not exist while listing it as available.
+      gauge.setValue(42);
+
+      expect(gauge.getValue()).toBe(42);
+    });
+
+    it("sets a value of zero", () => {
+      const gauge = new Gauge("temperature", { initialValue: 10 });
+
+      gauge.setValue(0);
+
+      expect(gauge.getValue()).toBe(0);
+    });
+
+    it("replaces rather than accumulates", () => {
+      const gauge = new Gauge("temperature", {});
+
+      gauge.setValue(10);
+      gauge.setValue(20);
+
+      expect(gauge.getValue()).toBe(20);
+    });
+  });
+
+  it("honours an initial value", () => {
+    const gauge = new Gauge("preset", { initialValue: 7 });
+
+    expect(gauge.getValue()).toBe(7);
+  });
+
+  it("carries its aggregation kind", () => {
+    // The kind decides how the backend merges readings from several instances.
+    expect(new Gauge("g", { kind: "peak" }).kind).toBe("peak");
+    expect(new Gauge("g", { kind: "ratio" }).kind).toBe("ratio");
+    expect(new Gauge("g", { kind: "additive" }).kind).toBe("additive");
+  });
+
+  describe("labels", () => {
+    it("keeps a separate level per label", () => {
+      const gauge = new Gauge<"pool">("connections", { labels: ["pool"] });
+
+      gauge.increment({ pool: "read" }, 3);
+      gauge.increment({ pool: "write" }, 1);
+
+      expect(gauge.getValue({ pool: "read" })).toBe(3);
+      expect(gauge.getValue({ pool: "write" })).toBe(1);
+    });
+
+    it("refuses an unlabelled operation on a labelled gauge", () => {
+      const gauge = new Gauge<"pool">("connections", { labels: ["pool"] });
+
+      expect(() => gauge.increment()).toThrow(/without specifying a label/);
+      expect(() => gauge.decrement()).toThrow(/without specifying a label/);
+      expect(() => gauge.setValue(1)).toThrow(/without specifying a label/);
+    });
+
+    it("reads back a label sitting at zero", () => {
+      const gauge = new Gauge<"pool">("connections", { labels: ["pool"] });
+
+      gauge.increment({ pool: "read" }, 5);
+      gauge.decrement({ pool: "read" }, 5);
+
+      expect(gauge.getValue({ pool: "read" })).toBe(0);
+    });
+  });
+
+  describe("tags", () => {
+    it("round-trips tags", () => {
+      const gauge = new Gauge("tagged", {});
+
+      gauge.tags = { env: "prod" };
+
+      expect(gauge.tags).toEqual({ env: "prod" });
+    });
+  });
+});
+
+describe("Summary", () => {
+  it("computes quantiles over what it observed", () => {
+    const summary = new Summary("latency");
+
+    for (let value = 1; value <= 100; value++) {
+      summary.observe(value);
+    }
+
+    expect(summary.p50.default).toBeGreaterThan(40);
+    expect(summary.p50.default).toBeLessThan(60);
+    expect(summary.p95.default).toBeGreaterThan(90);
+    expect(summary.p99.default).toBeGreaterThanOrEqual(summary.p95.default);
+  });
+
+  it("tracks count, total and maximum exactly", () => {
+    const summary = new Summary("latency");
+
+    summary.observe(10);
+    summary.observe(20);
+    summary.observe(30);
+
+    // These merge exactly across instances, where quantiles only estimate - so
+    // a mean and a worst case built from them stay truthful.
+    expect(summary.observations.default).toBe(3);
+    expect(summary.total.default).toBe(60);
+    expect(summary.maximum.default).toBe(30);
+  });
+
+  it("stays bounded however many observations arrive", () => {
+    const summary = new Summary("latency");
+
+    for (let i = 0; i < 20_000; i++) {
+      summary.observe(i);
+    }
+
+    // A summary must not grow with throughput; the exact aggregates still cover
+    // everything that was seen.
+    expect(summary.observations.default).toBe(20_000);
+    expect(summary.total.default).toBeGreaterThan(0);
+  });
+
+  it("rejects a non-finite observation", () => {
+    const summary = new Summary("latency");
+
+    // NaN would poison every quantile derived from the sample.
+    expect(() => summary.observe(Number.NaN)).toThrow(/non-finite/);
+    expect(() => summary.observe(Number.POSITIVE_INFINITY)).toThrow(
+      /non-finite/,
+    );
+  });
+
+  it("keeps an independent distribution per label", () => {
+    const summary = new Summary<"route">("latency", { labels: ["route"] });
+
+    summary.observe(10, "route");
+    summary.observe(1000, "route");
+
+    expect(summary.observations.route).toBe(2);
+    expect(summary.maximum.route).toBe(1000);
+  });
+
+  it("refuses an unlabelled observation on a labelled summary", () => {
+    const summary = new Summary<"route">("latency", { labels: ["route"] });
+
+    expect(() => summary.observe(10)).toThrow(/without specifying one/);
+  });
+
+  it("starts a fresh window after a flush", () => {
+    const summary = new Summary("latency");
+    summary.observe(10);
+    summary.observe(20);
+
+    summary.markFlushed();
+    summary.observe(100);
+
+    // Quantiles describe the window since the last flush, so carrying the old
+    // observations forward would smear a spike across every window after it.
+    expect(summary.observations.default).toBe(1);
+    expect(summary.maximum.default).toBe(100);
+  });
+});

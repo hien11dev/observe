@@ -1,0 +1,175 @@
+import { ProcessorDecoratorService } from "@nestjs/bullmq/dist/instrument/processor-decorator.service.js";
+import { Inject, Injectable, Logger } from "@nestjs/common";
+import { AsyncLocalStorage } from "async_hooks";
+import { Job, Processor } from "bullmq";
+import { randomUUID } from "crypto";
+import { ObserveAgentSharedBuffer } from "../agent/observe-agent.shared-buffer.js";
+import {
+  JobSnapshot,
+  ObserveModuleOptionsWithDefaults,
+} from "../interfaces/index.js";
+import { OperationTraceRegistry } from "../services/operation-trace.registry.js";
+import { KeyOf } from "../types/key-of.type.js";
+import { OBSERVE_OPTIONS } from "../observe.constants.js";
+
+@Injectable()
+export class QueueObserveAgentService<Store extends Record<string, unknown>> {
+  private readonly logger = new Logger(QueueObserveAgentService.name);
+
+  constructor(
+    private readonly observeAgentSharedBuffer: ObserveAgentSharedBuffer,
+    @Inject(OBSERVE_OPTIONS)
+    private readonly options: ObserveModuleOptionsWithDefaults,
+    private readonly operationTraceRegistry: OperationTraceRegistry,
+    private readonly asyncLocalStorage: AsyncLocalStorage<
+      Map<KeyOf<Store>, any>
+    >,
+  ) {
+    this.patchDecorate();
+  }
+
+  /**
+   * Queue-level facts BullMQ already tracks but that never reached telemetry:
+   * how long the job waited before a worker took it, and which attempt this is.
+   *
+   * Read defensively - these are optional on the Job type and absent when a
+   * queue driver does not populate them, in which case the fields are simply
+   * omitted rather than reported as zero.
+   */
+  private readQueueMetadata(job: Job): Partial<JobSnapshot> {
+    const metadata: Partial<JobSnapshot> = {};
+
+    if (typeof job.timestamp === "number") {
+      metadata.enqueuedAt = new Date(job.timestamp).toISOString();
+
+      // processedOn is set by the worker immediately before the processor runs.
+      // Falling back to now() keeps the measurement honest if it is missing.
+      const startedAt =
+        typeof job.processedOn === "number" ? job.processedOn : Date.now();
+
+      // `timestamp` is when the job was created, not when it became runnable, so
+      // for a delayed job the gap between the two is a schedule the caller asked
+      // for - not a queue that fell behind. Counting it would report a job dated
+      // a week out as a week of backlog and drag `job_wait_p95` with it.
+      const availableAt = job.timestamp + (job.delay ?? 0);
+      metadata.waitDuration = Math.max(0, startedAt - availableAt);
+    }
+
+    if (typeof job.attemptsMade === "number") {
+      metadata.attemptsMade = job.attemptsMade;
+    }
+
+    const maxAttempts = job.opts?.attempts;
+    if (typeof maxAttempts === "number") {
+      metadata.maxAttempts = maxAttempts;
+    }
+
+    return metadata;
+  }
+
+  private patchDecorate() {
+    if (!ProcessorDecoratorService?.prototype) {
+      this.logger.warn(
+        "ProcessorDecoratorService is not available. Please, update to the latest version of @nestjs/bullmq. Skipping patching.",
+      );
+      return;
+    }
+
+    ProcessorDecoratorService.prototype["decorate"] =
+      (processor: Processor<unknown, unknown>) => (job: Job) => {
+        const hasOuterContext = this.asyncLocalStorage
+          .getStore()
+          ?.has(this.options.traceIdKey);
+
+        return this.asyncLocalStorage.run(new Map<KeyOf<Store>, any>(), () => {
+          if (hasOuterContext) {
+            // If the outer context already has a trace ID
+            // ignore the inner context
+            if (this.options.debug) {
+              this.logger.debug(
+                `Outer context already has a trace ID. Skipping inner context for job "${job.name}" job.id: ${job.id}`,
+              );
+            }
+
+            return processor(job);
+          }
+          const traceId = randomUUID();
+          const store = this.asyncLocalStorage.getStore();
+          store.set(this.options.traceIdKey, traceId);
+
+          if (this.options.jobs?.setAttributes) {
+            const attributes = this.options.jobs?.setAttributes?.({
+              queueName: job.queueName,
+              name: job.name,
+              id: job.id,
+            });
+            if (attributes) {
+              for (const [key, value] of Object.entries(attributes)) {
+                store.set(key, value);
+              }
+            }
+          }
+
+          // setImmediate(() => {
+          this.operationTraceRegistry.startTrace(traceId, {
+            tags: this.options.jobs?.tags,
+            queueName: job.queueName,
+            name: job.name,
+            id: typeof job.id === "number" ? `${job.id}` : job.id,
+            ...this.readQueueMetadata(job),
+          } as JobSnapshot);
+          // });
+
+          const endTrace = (status: JobSnapshot["status"]) => {
+            setTimeout(async () => {
+              this.operationTraceRegistry.endTrace(traceId, { status });
+
+              const snapshot = (await this.operationTraceRegistry.pluckSnapshot(
+                traceId,
+              )) as JobSnapshot | undefined;
+
+              // `pluckSnapshot` deletes what it returns, so a trace already
+              // plucked - a job whose handler resolved and rejected, a retry
+              // reusing the id - answers undefined. The `!` here asserted
+              // otherwise, and the encoder dereferenced it inside a
+              // `setTimeout`, where no try/catch can reach: an unhandled
+              // TypeError that took the whole process down. A worker deployment
+              // could not finish booting, because draining a queue was enough
+              // to trigger it.
+              //
+              // Dropped rather than reported: there is no snapshot, so there is
+              // nothing to send, and losing one job's self-instrumentation is
+              // not worth a crash loop.
+              if (!snapshot) {
+                return;
+              }
+              this.observeAgentSharedBuffer.insertJobSnapshot(snapshot);
+            }, 0);
+          };
+
+          try {
+            const returnValue = processor(job);
+            if (returnValue instanceof Promise) {
+              return returnValue
+                .then((ret) => {
+                  endTrace("completed");
+                  return ret;
+                })
+                .catch((error: Error) => {
+                  console.error("ending trace with error:", error);
+                  endTrace("failed");
+                  throw error;
+                });
+            }
+
+            endTrace("completed");
+            return returnValue;
+          } catch (error) {
+            console.error("rethrowing again?");
+            endTrace("failed");
+            throw error;
+          }
+        });
+      };
+  }
+}
