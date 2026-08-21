@@ -39,6 +39,14 @@ import { KeyOf } from "./types/key-of.type.js";
 import { assertModuleOptions } from "./utils/assert-module-options.util.js";
 import { defaultTraceIdGenerator } from "./utils/default-trace-id-generator.util.js";
 
+/**
+ * All three async providers are optional on the options type, but one of them
+ * has to be there. Stating that here beats the `undefined` token Nest would
+ * otherwise try to resolve, which fails much later with no mention of why.
+ */
+const MISSING_ASYNC_OPTIONS_PROVIDER =
+  'ObserveModule.forRootAsync() requires one of "useFactory", "useClass" or "useExisting".';
+
 export function createObserveModule<Store extends Record<string, unknown>>(
   options: CreateObserveModuleOptions = {},
 ) {
@@ -137,11 +145,15 @@ export function createObserveModule<Store extends Record<string, unknown>>(
       if (asyncOptions.useExisting || asyncOptions.useFactory) {
         return [this.createAsyncOptionsProvider(asyncOptions)];
       }
+      const useClass = asyncOptions.useClass;
+      if (!useClass) {
+        throw new Error(MISSING_ASYNC_OPTIONS_PROVIDER);
+      }
       return [
         this.createAsyncOptionsProvider(asyncOptions),
         {
-          provide: asyncOptions.useClass,
-          useClass: asyncOptions.useClass,
+          provide: useClass,
+          useClass,
         },
       ];
     }
@@ -149,11 +161,12 @@ export function createObserveModule<Store extends Record<string, unknown>>(
     static createAsyncOptionsProvider(
       asyncOptions: ObserveModuleAsyncOptions,
     ): Provider {
-      if (asyncOptions.useFactory) {
+      const useFactory = asyncOptions.useFactory;
+      if (useFactory) {
         return {
           provide: OBSERVE_OPTIONS,
           useFactory: async (...args: any[]) => {
-            const opts = await asyncOptions.useFactory(...args);
+            const opts = await useFactory(...args);
             return {
               ...options,
               ...opts,
@@ -162,13 +175,18 @@ export function createObserveModule<Store extends Record<string, unknown>>(
           inject: asyncOptions.inject || [],
         };
       }
+      const optionsFactoryToken =
+        asyncOptions.useExisting ?? asyncOptions.useClass;
+      if (!optionsFactoryToken) {
+        throw new Error(MISSING_ASYNC_OPTIONS_PROVIDER);
+      }
       return {
         provide: OBSERVE_OPTIONS,
         useFactory: async (optionsFactory: ObserveOptionsFactory) => ({
           ...options,
-          ...(await optionsFactory.createWhispprOptions()),
+          ...(await optionsFactory.createObserveOptions()),
         }),
-        inject: [asyncOptions.useExisting || asyncOptions.useClass],
+        inject: [optionsFactoryToken],
       };
     }
   }

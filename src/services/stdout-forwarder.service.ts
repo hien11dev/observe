@@ -98,7 +98,11 @@ export class StdoutForwarderService implements OnModuleInit, OnModuleDestroy {
     this.originalWrite = process.stdout.write;
     const originalWrite = process.stdout.write.bind(process.stdout);
 
-    process.stdout.write = ((chunk, encoding, callback) => {
+    process.stdout.write = ((
+      chunk: string | Uint8Array,
+      encoding?: BufferEncoding,
+      callback?: (err?: Error | null) => void,
+    ) => {
       if (typeof chunk === "string") {
         // Never let a forwarding failure take down the write it wrapped -
         // stdout has to keep working even if telemetry does not.
@@ -109,7 +113,7 @@ export class StdoutForwarderService implements OnModuleInit, OnModuleDestroy {
           // write and recurse.
         }
       }
-      return originalWrite(chunk, encoding, callback);
+      return originalWrite(chunk, encoding as BufferEncoding, callback);
     }) as any;
   }
 

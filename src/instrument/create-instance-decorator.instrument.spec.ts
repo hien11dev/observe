@@ -93,7 +93,7 @@ describe("createInstanceDecorator", () => {
           service.fail();
           return "";
         } catch (err) {
-          return (err as Error).stack;
+          return (err as Error).stack ?? "";
         }
       });
 
@@ -120,7 +120,7 @@ describe("createInstanceDecorator", () => {
           service.fail();
           return "";
         } catch (err) {
-          return (err as Error).stack;
+          return (err as Error).stack ?? "";
         }
       });
 
@@ -147,7 +147,7 @@ describe("createInstanceDecorator", () => {
           orders.fail();
           return "";
         } catch (err) {
-          return (err as Error).stack;
+          return (err as Error).stack ?? "";
         }
       });
 
@@ -296,7 +296,7 @@ describe("createInstanceDecorator", () => {
           throwing();
           return "";
         } catch (err) {
-          return (err as Error).stack;
+          return (err as Error).stack ?? "";
         }
       });
 

@@ -2,6 +2,15 @@ import { foldProfile, V8Profile } from "./fold-profile.util.js";
 import { SpanSliceRecorder } from "./span-slice-recorder.js";
 
 /**
+ * The order a bare `sort()` produces, written out because a span id is optional
+ * and the default comparator is only defined for strings. `undefined` never
+ * reaches here - `sort` places it last on its own - so the sorted results below
+ * are unchanged.
+ */
+const bySpanId = (a: string | undefined, b: string | undefined): number =>
+  a === b ? 0 : (a ?? "") < (b ?? "") ? -1 : 1;
+
+/**
  * Builds a profile with the shape `Profiler.stop` returns: a node tree, one
  * node id per sample, and the microseconds elapsed before each sample.
  */
@@ -209,7 +218,7 @@ describe("foldProfile", () => {
       });
 
       expect(folded).toHaveLength(2);
-      expect(folded.map((entry) => entry.spanId).sort()).toEqual([
+      expect(folded.map((entry) => entry.spanId).sort(bySpanId)).toEqual([
         "span-1",
         undefined,
       ]);
@@ -228,7 +237,10 @@ describe("foldProfile", () => {
 
       // 10ms lands in a, 30ms lands in b - a concurrent server's spans overlap
       // in duration but never in execution.
-      expect(folded.map((entry) => entry.spanId).sort()).toEqual(["a", "b"]);
+      expect(folded.map((entry) => entry.spanId).sort(bySpanId)).toEqual([
+        "a",
+        "b",
+      ]);
     });
 
     it("treats a slice as half-open at its end", () => {

@@ -122,7 +122,7 @@ export class Gauge<TLabel extends string = typeof DEFAULT_LABEL>
     // Optional, like every other read of `attributes`. Without this the
     // single-argument overload the class advertises - `new Gauge("name")` -
     // threw "Cannot read properties of undefined".
-    this.labels = attributes?.labels as TLabel[];
+    this.labels = attributes?.labels;
     this.value = {
       [DEFAULT_LABEL]: this._initialValue,
     };
@@ -338,10 +338,11 @@ export class Gauge<TLabel extends string = typeof DEFAULT_LABEL>
 
   private validateLabels(labeledValue: Record<TLabel, string | number>): void {
     const keys = Object.keys(labeledValue);
-    this.labels?.forEach((label) => {
+    const declared = this.labels;
+    declared?.forEach((label) => {
       if (!keys.includes(label)) {
         throw new Error(
-          `Label "${label}" is not defined in the gauge. Available labels: ${this.labels.join(
+          `Label "${label}" is not defined in the gauge. Available labels: ${declared.join(
             ", ",
           )}.`,
         );

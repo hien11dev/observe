@@ -26,10 +26,16 @@ export class NodeRuntimeMetricsService
   private gcObserver: PerformanceObserver | null = null;
   private gcCount = 0;
   private gcTotalDuration = 0;
-  private gcBreakdown: NodeRuntimeMetrics["gc"]["breakdown"] = null;
-  private lastCpuUsage: NodeJS.CpuUsage | null = null;
-  private lastCpuUsageTimestamp: number | null = null;
-  private osTotalMemory: number;
+  private gcBreakdown: NonNullable<
+    NodeRuntimeMetrics["gc"]["breakdown"]
+  > | null = null;
+  // Seeded here rather than in `onModuleInit`, which never runs when runtime
+  // metrics are disabled and returns early before setting them. A sample taken
+  // in that window used to difference against `null`, which reads as the epoch
+  // and pins CPU usage at ~0%.
+  private lastCpuUsage: NodeJS.CpuUsage = process.cpuUsage();
+  private lastCpuUsageTimestamp: number = Date.now();
+  private osTotalMemory: number = os.totalmem();
 
   constructor(
     @Inject(OBSERVE_OPTIONS)
@@ -102,22 +108,21 @@ export class NodeRuntimeMetricsService
             continue;
           }
 
-          if (this.gcBreakdown) {
-            this.gcBreakdown[kind] = this.gcBreakdown[kind] || {
-              count: 0,
-              duration: 0,
-            };
-            this.gcBreakdown[kind].count++;
-            this.gcBreakdown[kind].duration += entry.duration;
-          } else {
-            this.gcBreakdown = {
-              minor: { count: 0, duration: 0 },
-              major: { count: 0, duration: 0 },
-              incremental: { count: 0, duration: 0 },
-            };
-            this.gcBreakdown[kind].count++;
-            this.gcBreakdown[kind].duration += entry.duration;
-          }
+          // Seeded with all three kinds at zero on the first collection of the
+          // window: "no major collections happened" and "major collections were
+          // not reported" are different facts, and only the seeding keeps them
+          // apart downstream.
+          this.gcBreakdown ??= {
+            minor: { count: 0, duration: 0 },
+            major: { count: 0, duration: 0 },
+            incremental: { count: 0, duration: 0 },
+          };
+          const bucket = (this.gcBreakdown[kind] ??= {
+            count: 0,
+            duration: 0,
+          });
+          bucket.count++;
+          bucket.duration += entry.duration;
         }
       }
     });
@@ -126,6 +131,16 @@ export class NodeRuntimeMetricsService
   }
 
   collectNodeRuntimeMetrics(): NodeRuntimeMetrics {
+    // Nothing was started, so there is nothing to collect: with metrics turned
+    // off the histogram is never enabled, and every number below would be
+    // fabricated. This used to surface as a TypeError from dereferencing the
+    // absent monitor; it is stated outright so the reason survives.
+    if (!this.eventLoopDelayMonitor) {
+      throw new Error(
+        "Runtime metrics are not being collected. `collectNodeRuntimeMetrics()` requires `onModuleInit()` to have run with the `runtimeMetrics` option enabled.",
+      );
+    }
+
     const timestamp = Date.now();
     const elapsedTime = timestamp - this.lastCpuUsageTimestamp;
     const memoryUsage = process.memoryUsage();

@@ -33,7 +33,9 @@ const MIN_FLUSH_INTERVAL = 1000; // 1 second
 @Injectable()
 export class ObserveAgentWorker implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(ObserveAgentWorker.name);
-  private worker: Worker;
+  // Null before `initializeWorker` and again after termination, which is what
+  // the shutdown path below checks for.
+  private worker: Worker | null = null;
   private flushInterval: NodeJS.Timeout;
   private runtimeMetricsInterval: NodeJS.Timeout | null = null;
   private cpuProfiler: CpuProfilerService | null = null;

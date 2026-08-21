@@ -18,9 +18,12 @@ export class TracerService<
   >,
   TraceKey extends string = "traceId",
 > {
-  private readonly counters = new Map<string, Counter>();
-  private readonly gauges = new Map<string, Gauge>();
-  private readonly summaries = new Map<string, Summary>();
+  // Each entry has its own label union, so the maps hold the label-agnostic
+  // form: pinning them to `Counter<"default">` only forced a cast back out on
+  // every read and another one on every write.
+  private readonly counters = new Map<string, Counter<any>>();
+  private readonly gauges = new Map<string, Gauge<any>>();
+  private readonly summaries = new Map<string, Summary<any>>();
 
   constructor(
     private readonly operationTraceRegistry: OperationTraceRegistry,
@@ -46,7 +49,7 @@ export class TracerService<
         'AsyncLocalStorage is not initialized. Ensure that you are using the "createSpan" method within an async context.',
       );
     }
-    const traceId = store.get(this.options.traceIdKey);
+    const traceId = this.requireTraceId(store, "createSpan");
     const callerId = store.get(CALLER_METADATA_KEY) as string | undefined;
     return this.operationTraceRegistry.createManualSpan(
       traceId,
@@ -71,7 +74,7 @@ export class TracerService<
         'AsyncLocalStorage is not initialized. Ensure that you are using the "activeSpan" method within an async context.',
       );
     }
-    const traceId = store.get(this.options.traceIdKey);
+    const traceId = this.requireTraceId(store, "activeSpan");
     const callerId = store.get(CALLER_METADATA_KEY) as string | undefined;
     const activeOngoingEvent = this.operationTraceRegistry.getActiveSpan(
       traceId,
@@ -90,7 +93,10 @@ export class TracerService<
     }
 
     const traceSpanDelegate = new TraceSpanDelegate(
-      activeOngoingEvent.spanId,
+      // Optional on the shared `TraceSpan` interface, always set on the nodes
+      // the registry builds - and `getActiveSpan` only ever returns one of
+      // those.
+      activeOngoingEvent.spanId ?? "",
       activeOngoingEvent.name,
       tags,
     );
@@ -116,8 +122,18 @@ export class TracerService<
     }
 
     const traceId = store.get(this.options.traceIdKey);
+    if (typeof traceId !== "string") {
+      // Reporting an error must not raise one. The registry warned and gave up
+      // in this case anyway, so the outcome is unchanged.
+      return;
+    }
     const callerId = store.get(CALLER_METADATA_KEY) as string | undefined;
-    this.operationTraceRegistry.captureError(traceId, callerId, error, tags);
+    this.operationTraceRegistry.captureError(
+      traceId,
+      callerId,
+      error,
+      tags ?? {},
+    );
   }
 
   /**
@@ -152,8 +168,8 @@ export class TracerService<
       labels?: TLabel[];
     },
   ): Counter<TLabel> {
-    if (this.counters.has(name)) {
-      const existingRef = this.counters.get(name) as Counter<TLabel>;
+    const existingRef = this.counters.get(name) as Counter<TLabel> | undefined;
+    if (existingRef) {
       const overridableRef = existingRef as any;
       if (attributes?.description) {
         overridableRef.description = attributes.description;
@@ -176,7 +192,7 @@ export class TracerService<
       attributes?.labels,
     );
     this.registerCounterChangeHandler(counter);
-    this.counters.set(name, counter as Counter);
+    this.counters.set(name, counter);
     return counter;
   }
 
@@ -216,8 +232,8 @@ export class TracerService<
       kind?: GaugeKind;
     },
   ): Gauge<TLabel> {
-    if (this.gauges.has(name)) {
-      const existingRef = this.gauges.get(name) as Gauge<TLabel>;
+    const existingRef = this.gauges.get(name) as Gauge<TLabel> | undefined;
+    if (existingRef) {
       const overridableRef = existingRef as any;
       if (attributes?.description) {
         overridableRef.description = attributes.description;
@@ -235,11 +251,11 @@ export class TracerService<
         overridableRef.kind = attributes.kind;
       }
 
-      return this.gauges.get(name) as Gauge<TLabel>;
+      return existingRef;
     }
-    const gauge = new Gauge<TLabel>(name, attributes);
+    const gauge = new Gauge<TLabel>(name, attributes ?? {});
     this.registerGaugeChangeHandler(gauge);
-    this.gauges.set(name, gauge as Gauge);
+    this.gauges.set(name, gauge);
     return gauge;
   }
 
@@ -277,8 +293,8 @@ export class TracerService<
       sampleSize?: number;
     },
   ): Summary<TLabel> {
-    if (this.summaries.has(name)) {
-      const existingRef = this.summaries.get(name) as Summary<TLabel>;
+    const existingRef = this.summaries.get(name) as Summary<TLabel> | undefined;
+    if (existingRef) {
       const overridableRef = existingRef as any;
       if (attributes?.description) {
         overridableRef.description = attributes.description;
@@ -290,7 +306,7 @@ export class TracerService<
     }
     const summary = new Summary<TLabel>(name, attributes ?? {});
     this.registerSummaryChangeHandler(summary);
-    this.summaries.set(name, summary as Summary);
+    this.summaries.set(name, summary);
     return summary;
   }
 
@@ -346,11 +362,29 @@ export class TracerService<
     return store.get(key);
   }
 
+  /**
+   * Reads the trace id the request was opened under. Its absence means the call
+   * is outside any traced operation, which is the same mistake as calling these
+   * methods with no async context at all - and is reported the same way.
+   */
+  private requireTraceId(
+    store: Map<KeyOf<Store>, unknown>,
+    method: string,
+  ): string {
+    const traceId = store.get(this.options.traceIdKey);
+    if (typeof traceId !== "string") {
+      throw new Error(
+        `No trace id found in the current context. Ensure that you are using the "${method}" method within a traced operation.`,
+      );
+    }
+    return traceId;
+  }
+
   private registerCounterChangeHandler<TLabel extends string>(
     counter: Counter<TLabel>,
   ): void {
     counter["_onChange"] = (self: Counter<TLabel>) => {
-      this.observeAgentSharedBuffer.upsertCustomMetric(self as Counter);
+      this.observeAgentSharedBuffer.upsertCustomMetric(self);
     };
   }
 
@@ -358,7 +392,7 @@ export class TracerService<
     gauge: Gauge<TLabel>,
   ): void {
     gauge["_onChange"] = (self: Gauge<TLabel>) => {
-      this.observeAgentSharedBuffer.upsertCustomMetric(self as Gauge);
+      this.observeAgentSharedBuffer.upsertCustomMetric(self);
     };
   }
 
@@ -366,7 +400,7 @@ export class TracerService<
     summary: Summary<TLabel>,
   ): void {
     summary["_onChange"] = (self: Summary<TLabel>) => {
-      this.observeAgentSharedBuffer.upsertCustomMetric(self as Summary);
+      this.observeAgentSharedBuffer.upsertCustomMetric(self);
     };
   }
 }

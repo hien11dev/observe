@@ -1,4 +1,5 @@
 import { NodeRuntimeMetrics } from "../interfaces/index.js";
+import { remapKeys } from "./remap-keys.util.js";
 
 const RUNTIME_METRICS_KEY_MAP = {
   cpu: "c",
@@ -42,110 +43,100 @@ const EVENT_LOOP_KEY_MAP = {
   utilization: "u",
 } as const satisfies Record<keyof NodeRuntimeMetrics["eventLoop"], string>;
 
-export type EncodedNodeRuntimeMetrics = {
-  [K in keyof NodeRuntimeMetrics as K extends keyof typeof RUNTIME_METRICS_KEY_MAP
-    ? (typeof RUNTIME_METRICS_KEY_MAP)[K]
-    : never]: NodeRuntimeMetrics[K];
-} & {
-  c?: {
-    [K in keyof NodeRuntimeMetrics["cpu"] as K extends keyof typeof CPU_KEY_MAP
-      ? (typeof CPU_KEY_MAP)[K]
-      : never]: NodeRuntimeMetrics["cpu"][K];
-  };
-  m?: {
-    [K in keyof NodeRuntimeMetrics["memory"] as K extends keyof typeof MEMORY_KEY_MAP
-      ? (typeof MEMORY_KEY_MAP)[K]
-      : never]: NodeRuntimeMetrics["memory"][K];
-  };
-  g?: {
+type EncodedCpu = {
+  [K in keyof NodeRuntimeMetrics["cpu"] as K extends keyof typeof CPU_KEY_MAP
+    ? (typeof CPU_KEY_MAP)[K]
+    : never]: NodeRuntimeMetrics["cpu"][K];
+};
+
+type EncodedMemory = {
+  [K in keyof NodeRuntimeMetrics["memory"] as K extends keyof typeof MEMORY_KEY_MAP
+    ? (typeof MEMORY_KEY_MAP)[K]
+    : never]: NodeRuntimeMetrics["memory"][K];
+};
+
+type EncodedGcBreakdown = {
+  [K in keyof NonNullable<
+    NodeRuntimeMetrics["gc"]["breakdown"]
+  > as K extends keyof typeof GC_BREAKDOWN_KEY_MAP
+    ? (typeof GC_BREAKDOWN_KEY_MAP)[K]
+    : never]: NonNullable<NodeRuntimeMetrics["gc"]["breakdown"]>[K];
+};
+
+type EncodedGc = Omit<
+  {
     [K in keyof NodeRuntimeMetrics["gc"] as K extends keyof typeof GC_KEY_MAP
       ? (typeof GC_KEY_MAP)[K]
       : never]: NodeRuntimeMetrics["gc"][K];
-  } & {
-    b?: {
-      [K in keyof NodeRuntimeMetrics["gc"]["breakdown"] as K extends keyof typeof GC_BREAKDOWN_KEY_MAP
-        ? (typeof GC_BREAKDOWN_KEY_MAP)[K]
-        : never]: NodeRuntimeMetrics["gc"]["breakdown"][K];
-    };
-  };
-  e?: {
-    [K in keyof NodeRuntimeMetrics["eventLoop"] as K extends keyof typeof EVENT_LOOP_KEY_MAP
-      ? (typeof EVENT_LOOP_KEY_MAP)[K]
-      : never]: NodeRuntimeMetrics["eventLoop"][K];
-  };
+  },
+  "b"
+> & {
+  b?: EncodedGcBreakdown;
+};
+
+type EncodedEventLoop = {
+  [K in keyof NodeRuntimeMetrics["eventLoop"] as K extends keyof typeof EVENT_LOOP_KEY_MAP
+    ? (typeof EVENT_LOOP_KEY_MAP)[K]
+    : never]: NodeRuntimeMetrics["eventLoop"][K];
+};
+
+// Each section holds encoded values, so the four keys are replaced rather than
+// intersected - intersecting left them claiming both the long-form and the
+// short-form fields at once, and only the short-form ones are ever written.
+export type EncodedNodeRuntimeMetrics = Omit<
+  {
+    [K in keyof NodeRuntimeMetrics as K extends keyof typeof RUNTIME_METRICS_KEY_MAP
+      ? (typeof RUNTIME_METRICS_KEY_MAP)[K]
+      : never]: NodeRuntimeMetrics[K];
+  },
+  "c" | "m" | "g" | "e"
+> & {
+  c?: EncodedCpu;
+  m?: EncodedMemory;
+  g?: EncodedGc;
+  e?: EncodedEventLoop;
 };
 
 export class RuntimeMetricsEncoder {
   static encode(metrics: NodeRuntimeMetrics): EncodedNodeRuntimeMetrics {
-    const encoded: EncodedNodeRuntimeMetrics = {} as EncodedNodeRuntimeMetrics;
-
-    for (const key in metrics) {
-      if (RUNTIME_METRICS_KEY_MAP[key as keyof NodeRuntimeMetrics]) {
-        encoded[
-          RUNTIME_METRICS_KEY_MAP[key as keyof NodeRuntimeMetrics] as string
-        ] = metrics[key];
-      }
-    }
+    const encoded = remapKeys<NodeRuntimeMetrics, EncodedNodeRuntimeMetrics>(
+      metrics,
+      RUNTIME_METRICS_KEY_MAP,
+    );
 
     if (metrics.cpu) {
-      encoded.c = {} as EncodedNodeRuntimeMetrics["c"];
-      for (const key in metrics.cpu) {
-        const cpuKey = CPU_KEY_MAP[key as keyof NodeRuntimeMetrics["cpu"]];
-        if (cpuKey) {
-          encoded.c[cpuKey as string] =
-            metrics.cpu[key as keyof NodeRuntimeMetrics["cpu"]];
-        }
-      }
+      encoded.c = remapKeys<NodeRuntimeMetrics["cpu"], EncodedCpu>(
+        metrics.cpu,
+        CPU_KEY_MAP,
+      );
     }
 
     if (metrics.memory) {
-      encoded.m = {} as EncodedNodeRuntimeMetrics["m"];
-      for (const key in metrics.memory) {
-        const memoryKey =
-          MEMORY_KEY_MAP[key as keyof NodeRuntimeMetrics["memory"]];
-        if (memoryKey) {
-          encoded.m[memoryKey as string] =
-            metrics.memory[key as keyof NodeRuntimeMetrics["memory"]];
-        }
-      }
+      encoded.m = remapKeys<NodeRuntimeMetrics["memory"], EncodedMemory>(
+        metrics.memory,
+        MEMORY_KEY_MAP,
+      );
     }
 
     if (metrics.gc) {
-      encoded.g = {} as EncodedNodeRuntimeMetrics["g"];
-      for (const key in metrics.gc) {
-        if (GC_KEY_MAP[key as keyof NodeRuntimeMetrics["gc"]]) {
-          encoded.g[GC_KEY_MAP[key as keyof NodeRuntimeMetrics["gc"]]] =
-            metrics.gc[key];
-        }
-      }
+      encoded.g = remapKeys<NodeRuntimeMetrics["gc"], EncodedGc>(
+        metrics.gc,
+        GC_KEY_MAP,
+      );
 
       if (metrics.gc.breakdown) {
-        encoded.g.b = {} as EncodedNodeRuntimeMetrics["g"]["b"];
-        for (const key in metrics.gc.breakdown) {
-          if (
-            GC_BREAKDOWN_KEY_MAP[
-              key as keyof NodeRuntimeMetrics["gc"]["breakdown"]
-            ]
-          ) {
-            encoded.g.b[
-              GC_BREAKDOWN_KEY_MAP[
-                key as keyof NodeRuntimeMetrics["gc"]["breakdown"]
-              ]
-            ] = metrics.gc.breakdown[key];
-          }
-        }
+        encoded.g.b = remapKeys<
+          NonNullable<NodeRuntimeMetrics["gc"]["breakdown"]>,
+          EncodedGcBreakdown
+        >(metrics.gc.breakdown, GC_BREAKDOWN_KEY_MAP);
       }
     }
 
     if (metrics.eventLoop) {
-      encoded.e = {} as EncodedNodeRuntimeMetrics["e"];
-      for (const key in metrics.eventLoop) {
-        if (EVENT_LOOP_KEY_MAP[key as keyof NodeRuntimeMetrics["eventLoop"]]) {
-          encoded.e[
-            EVENT_LOOP_KEY_MAP[key as keyof NodeRuntimeMetrics["eventLoop"]]
-          ] = metrics.eventLoop[key];
-        }
-      }
+      encoded.e = remapKeys<NodeRuntimeMetrics["eventLoop"], EncodedEventLoop>(
+        metrics.eventLoop,
+        EVENT_LOOP_KEY_MAP,
+      );
     }
 
     return encoded;

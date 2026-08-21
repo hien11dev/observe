@@ -67,8 +67,33 @@ async function bootstrap() {
 bootstrap();
 ```
 
-`ObserveModule.forRootAsync()` is available when the options have to be resolved
-from a provider (for example `ConfigService`).
+### Async configuration
+
+`ObserveModule.forRootAsync()` resolves the options from the DI container, via
+`useFactory`, `useClass`, or `useExisting`:
+
+```ts
+ObserveModule.forRootAsync({
+  imports: [ConfigModule],
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    appKey: config.getOrThrow("OBSERVE_APP_KEY"),
+    appSecret: config.getOrThrow("OBSERVE_APP_SECRET"),
+    serviceId: config.getOrThrow("OBSERVE_SERVICE_ID"),
+  }),
+});
+```
+
+`useClass` and `useExisting` take a class implementing `ObserveOptionsFactory`:
+
+```ts
+@Injectable()
+export class ObserveConfig implements ObserveOptionsFactory {
+  createObserveOptions(): ObserveOptions {
+    return { appKey: "...", appSecret: "...", serviceId: "..." };
+  }
+}
+```
 
 ## Optional peer dependencies
 

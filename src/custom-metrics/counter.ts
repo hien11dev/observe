@@ -185,6 +185,17 @@ export class Counter<TLabel extends string = typeof DEFAULT_LABEL>
     initialValue: number,
     labels: TLabel[],
   );
+  /**
+   * The form `TracerService.counter()` builds when it spreads an attributes
+   * bag, where any member may be absent. Listed last so the overloads above
+   * stay the ones a hand-written call resolves to.
+   */
+  constructor(
+    name: string,
+    description?: string,
+    initialValue?: number,
+    labels?: TLabel[],
+  );
   constructor(
     name: string,
     description?: string,
@@ -198,7 +209,7 @@ export class Counter<TLabel extends string = typeof DEFAULT_LABEL>
     this._initialValue =
       typeof labelsOrInitialValue === "number" ? labelsOrInitialValue : 0;
     if (Array.isArray(labelsOrInitialValue)) {
-      this.labels = labelsOrInitialValue as TLabel[];
+      this.labels = labelsOrInitialValue;
       this.value = {};
     } else if (labels) {
       this.labels = labels;
@@ -309,10 +320,11 @@ export class Counter<TLabel extends string = typeof DEFAULT_LABEL>
 
   private validateLabels(labeledValue: Record<TLabel, string | number>): void {
     const keys = Object.keys(labeledValue);
-    this.labels?.forEach((label) => {
+    const declared = this.labels;
+    declared?.forEach((label) => {
       if (!keys.includes(label)) {
         throw new Error(
-          `Label "${label}" is not defined in the counter. Available labels: ${this.labels.join(
+          `Label "${label}" is not defined in the counter. Available labels: ${declared.join(
             ", ",
           )}.`,
         );

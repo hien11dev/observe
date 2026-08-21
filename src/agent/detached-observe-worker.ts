@@ -19,7 +19,7 @@ export const detachedObserveWorker = () => {
 
   const telemetryUrl = `${config.endpoint}/applications/telemetry`;
 
-  const headers = {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "Content-Encoding": "gzip",
   };
@@ -129,7 +129,7 @@ export const detachedObserveWorker = () => {
       const jsonStr = decoder.decode(jsonBytes);
 
       const compressed = await new Promise((resolve, reject) =>
-        zlib.gzip(jsonStr, (err, compressed) => {
+        zlib.gzip(jsonStr, (err: Error | null, compressed: Buffer) => {
           if (err) {
             reject(err);
           } else {

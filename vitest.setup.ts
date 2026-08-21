@@ -15,4 +15,5 @@ import "reflect-metadata";
  * transformed source rather than the `.ts`; SWC strips types line-for-line, so
  * the line numbers still line up.
  */
-Error.prepareStackTrace = undefined;
+Error.prepareStackTrace =
+  undefined as unknown as typeof Error.prepareStackTrace;

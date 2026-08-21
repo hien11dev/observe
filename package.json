@@ -1,7 +1,27 @@
 {
   "name": "@nestjs/observe",
   "version": "0.0.1",
-  "description": "Nest - modern, fast, powerful node.js web framework (@observe)",
+  "description": "Observability and APM agent for NestJS - traces, runtime metrics, custom metrics and CPU profiles",
+  "author": "Kamil Mysliwiec",
+  "homepage": "https://nestjs.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nestjs/observe.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nestjs/observe/issues"
+  },
+  "keywords": [
+    "nestjs",
+    "nest",
+    "observability",
+    "apm",
+    "tracing",
+    "telemetry",
+    "metrics",
+    "profiling",
+    "instrumentation"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

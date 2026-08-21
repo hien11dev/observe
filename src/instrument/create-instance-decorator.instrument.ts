@@ -121,7 +121,10 @@ export function createInstanceDecorator<T extends Record<string, unknown>>(
         throw err;
       };
       return als.run(
-        new Map([...store.entries(), [CALLER_METADATA_KEY, newStepId]]),
+        new Map([
+          ...(store?.entries() ?? []),
+          [CALLER_METADATA_KEY, newStepId],
+        ]),
         named(frameName, () => {
           try {
             const result = call(this, args);

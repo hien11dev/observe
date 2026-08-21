@@ -106,7 +106,7 @@ describe("ObserveAgentSharedBuffer", () => {
     it("does not write to stdout when it drops", () => {
       // `pushLogs` is called from the patched `process.stdout.write`, so a log
       // line here would re-enter, drop, and log again - unbounded recursion.
-      const buffer = createBuffer({ debug: true } as never);
+      const buffer = createBuffer({ debug: true });
       const write = vi
         .spyOn(process.stdout, "write")
         .mockImplementation(() => true);
@@ -229,8 +229,8 @@ describe("ObserveAgentSharedBuffer", () => {
     });
 
     it("reports whether log forwarding is on", () => {
-      const on = createBuffer({ forwardLogs: true } as never);
-      const off = createBuffer({ forwardLogs: false } as never);
+      const on = createBuffer({ forwardLogs: true });
+      const off = createBuffer({ forwardLogs: false });
       on.pushLogs(logs(1));
       off.pushLogs(logs(1));
 
@@ -242,7 +242,7 @@ describe("ObserveAgentSharedBuffer", () => {
     });
 
     it("includes the service version only when one is configured", () => {
-      const versioned = createBuffer({ serviceVersion: "1.2.3" } as never);
+      const versioned = createBuffer({ serviceVersion: "1.2.3" });
       const unversioned = createBuffer();
       versioned.pushLogs(logs(1));
       unversioned.pushLogs(logs(1));

@@ -58,20 +58,29 @@ export class LoggerPatcherService implements OnModuleInit {
 
     ConsoleLogger.prototype["getJsonLogObject"] = function (
       this: ConsoleLogger,
-      logLevel: LogLevel,
+      // Nest calls this as `(message, options)`. The wrapper used to declare
+      // `(logLevel, message, context)` and forward all three: the values still
+      // landed correctly by accident - `message` in the first slot, the options
+      // bag in the second - and the third argument was dropped on the floor.
       message: unknown,
-      context?: string,
+      logOptions: {
+        context: string;
+        logLevel: LogLevel;
+        writeStreamType?: "stdout" | "stderr";
+        errorStack?: unknown;
+      },
     ) {
       const store = asyncLocalStorage.getStore();
       const requestId = store?.get(options.traceIdKey);
       const jsonLogObject = originalGetJsonLogObject.call(
         this,
-        logLevel,
         message,
-        context,
+        logOptions,
       );
       if (requestId) {
-        jsonLogObject["traceId"] = requestId;
+        // Not a field Nest models on the returned object, which is the whole
+        // point of the patch.
+        (jsonLogObject as Record<string, unknown>)["traceId"] = requestId;
       }
       return jsonLogObject;
     };

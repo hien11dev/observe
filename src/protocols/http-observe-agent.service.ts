@@ -117,9 +117,11 @@ export class HttpObserveAgentService<Store extends Record<string, unknown>>
     res: unknown,
     done: () => void,
   ) {
-    this.asyncLocalStorage.run(new Map<KeyOf<Store>, any>(), () => {
+    // The same map `run` is given, rather than `getStore()` inside the callback:
+    // identical object, one lookup fewer, and it is known to exist.
+    const store = new Map<KeyOf<Store>, any>();
+    this.asyncLocalStorage.run(store, () => {
       const traceId = this.options.traceIdGenerator(req);
-      const store = this.asyncLocalStorage.getStore();
       store.set(this.options.traceIdKey, traceId);
 
       if (this.options.http?.setAttributes) {

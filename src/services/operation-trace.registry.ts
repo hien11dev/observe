@@ -51,9 +51,12 @@ const HANDLED_ERROR_STATUS_CODE = 400;
 
 export class OperationTraceRegistry {
   private readonly traceSnapshots: Map<TraceId, SnapshotWithSignal> = new Map();
+  // Keyed by `string | undefined` because a root span has no caller: entries
+  // are only ever stored under a real span id, but the lookup domain includes
+  // "no caller", which is a legitimate miss rather than a type error.
   private readonly callerIdsByTraceId: Map<
     TraceId,
-    Map<string, OngoingTraceEventNode>
+    Map<string | undefined, OngoingTraceEventNode>
   > = new Map();
   private readonly logger = new Logger(OperationTraceRegistry.name);
   /**
@@ -165,7 +168,11 @@ export class OperationTraceRegistry {
       this.traceSnapshots.delete(traceId);
       return;
     }
-    snapshot.duration = performance.now() - snapshot.startTimestamp;
+    // Set by `startTrace` and deleted a few lines below, so it is always there
+    // for a snapshot still in the registry. The fallback keeps a duration of 0
+    // rather than a NaN that would poison every average built over it.
+    const startTimestamp = snapshot.startTimestamp ?? performance.now();
+    snapshot.duration = performance.now() - startTimestamp;
 
     const reportedStatusCode =
       "statusCode" in opts && typeof opts.statusCode === "number"
@@ -296,10 +303,10 @@ export class OperationTraceRegistry {
     className: string,
     methodKey: string,
     callerId: string | undefined,
-  ): string {
+  ): string | undefined {
     const snapshot = this.traceSnapshots.get(traceId);
     if (!snapshot) {
-      return;
+      return undefined;
     }
     snapshot.refsCounter += 1;
 
@@ -348,10 +355,18 @@ export class OperationTraceRegistry {
 
   internalEndTraceStep(
     traceId: TraceId,
-    spanId: string,
+    /**
+     * Diagnostic label only - it names the span in the two warnings below and
+     * is read nowhere else. Absent for a step that never opened, which is the
+     * same condition `callerId` reports.
+     */
+    spanId: string | undefined,
     className: string,
     methodKey: string,
-    callerId: string,
+    // Undefined when `internalStartTraceStep` found no snapshot to open the
+    // step against; the lookup below then misses and warns, as it does for any
+    // other unknown caller.
+    callerId: string | undefined,
     error?: Error | string | object,
   ): void {
     const snapshot = this.traceSnapshots.get(traceId);
@@ -371,7 +386,8 @@ export class OperationTraceRegistry {
       );
       return;
     }
-    const cursor: OngoingTraceEventNode = refsByCaller.get(callerId);
+    const cursor: OngoingTraceEventNode | undefined =
+      refsByCaller.get(callerId);
     if (!cursor) {
       this.logger.warn(
         `No ongoing trace found for the "${spanId}" span. Some of your async operations were not awaited and the outer span ended before the inner one. Check your "${className}#${methodKey}" method. Ignore if this is the desired behavior.`,
@@ -381,19 +397,24 @@ export class OperationTraceRegistry {
 
     const duration = performance.now() - cursor.startTime;
 
-    delete cursor.type; // Remove the 'type' property as the node is now complete
-    delete cursor.startTime; // Remove the 'startTime' property as the duration is now set
+    // `type`, `startTime` and `parent` are exactly what separates an ongoing
+    // node from a complete one, so removing them *is* the conversion the cast
+    // below records. They go through a view that admits their absence rather
+    // than each needing its own suppression.
+    const completing = cursor as Partial<OngoingTraceEventNode>;
+    delete completing.type; // The node is now complete
+    delete completing.startTime; // The duration is now set
     const parent = cursor.parent;
-    delete cursor.parent; // Remove the parent reference from the cursor as complete nodes should not have a parent reference
+    delete completing.parent; // Complete nodes carry no parent reference
 
     // Remove tags if empty
     if (Object.keys(cursor.tags || {}).length === 0) {
-      delete cursor.tags;
+      delete completing.tags;
     }
 
     // Clean up children array if it is empty
     if (cursor.children.length === 0) {
-      delete cursor.children;
+      delete completing.children;
     }
 
     const activeTrace: CompleteTraceEventNode =
@@ -486,7 +507,7 @@ export class OperationTraceRegistry {
 
   captureError(
     traceId: string,
-    callerId: string,
+    callerId: string | undefined,
     error: Error | string,
     tags: Record<string, string | number | boolean>,
   ): void {
@@ -506,7 +527,7 @@ export class OperationTraceRegistry {
     }
 
     const refsByCaller = this.callerIdsByTraceId.get(traceId);
-    const targetSpan = refsByCaller.get(callerId);
+    const targetSpan = refsByCaller?.get(callerId);
     if (!targetSpan) {
       this.logger.warn(
         `No active span found for traceId: "${traceId}". Cannot capture error.`,
@@ -541,8 +562,8 @@ export class OperationTraceRegistry {
   async pluckSnapshot(
     traceId: string,
   ): Promise<RequestSnapshot | JobSnapshot | undefined> {
-    if (this.traceSnapshots.has(traceId)) {
-      const snapshot = this.traceSnapshots.get(traceId);
+    const snapshot = this.traceSnapshots.get(traceId);
+    if (snapshot) {
       const cleanup = () => {
         this.callerIdsByTraceId.delete(traceId);
         this.traceSnapshots.delete(traceId);
@@ -560,9 +581,12 @@ export class OperationTraceRegistry {
       }
       cleanup();
 
-      delete snapshot.refsCounter;
-      delete snapshot.refsMarkedAsComplete;
-      delete snapshot.errorStatusCode;
+      // These three are what distinguish the registry's working copy from the
+      // snapshot the API receives, so removing them is the hand-off.
+      const bookkeeping = snapshot as Partial<SnapshotWithSignal>;
+      delete bookkeeping.refsCounter;
+      delete bookkeeping.refsMarkedAsComplete;
+      delete bookkeeping.errorStatusCode;
       return snapshot;
     }
     return undefined;
@@ -570,7 +594,7 @@ export class OperationTraceRegistry {
 
   getActiveSpan(
     traceId: string,
-    callerId: string,
+    callerId: string | undefined,
   ): OngoingTraceEventNode | undefined {
     const refsByCaller = this.callerIdsByTraceId.get(traceId);
     if (!refsByCaller) {
@@ -582,7 +606,7 @@ export class OperationTraceRegistry {
 
   async createManualSpan(
     traceId: string,
-    callerId: string,
+    callerId: string | undefined,
     name: string,
     spanFunction: (span: TraceSpanDelegate) => any,
   ) {
@@ -629,14 +653,13 @@ export class OperationTraceRegistry {
     };
     activeSpan.children.push(manualSpan);
 
-    const refsByCaller = this.callerIdsByTraceId.get(traceId);
-    refsByCaller.set(newNodeId, manualSpan);
+    this.callerIdsByTraceId.get(traceId)?.set(newNodeId, manualSpan);
 
     const onResponse = (res: unknown) => {
       // setImmediate
       this.internalEndTraceStep(
         traceId,
-        manualSpan.spanId,
+        newNodeId,
         manualSpan.className,
         manualSpan.methodKey,
         newNodeId,
@@ -648,7 +671,7 @@ export class OperationTraceRegistry {
       //   () =>
       this.internalEndTraceStep(
         traceId,
-        manualSpan.spanId,
+        newNodeId,
         manualSpan.className,
         manualSpan.methodKey,
         newNodeId,
@@ -661,15 +684,11 @@ export class OperationTraceRegistry {
     };
 
     const tags = {} as Record<string, string | number | boolean>;
-    const delegate = new TraceSpanDelegate(
-      manualSpan.spanId,
-      manualSpan.name,
-      tags,
-    );
+    const delegate = new TraceSpanDelegate(newNodeId, manualSpan.name, tags);
     manualSpan.tags = tags;
     const store = this.als.getStore();
     return this.als.run(
-      new Map([...store.entries(), [CALLER_METADATA_KEY, newNodeId]]),
+      new Map([...(store?.entries() ?? []), [CALLER_METADATA_KEY, newNodeId]]),
       () => {
         try {
           const result = spanFunction(delegate);

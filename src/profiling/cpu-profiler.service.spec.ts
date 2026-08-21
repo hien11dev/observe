@@ -48,9 +48,9 @@ describe("CpuProfilerService", () => {
       // windowing logic is identical at any length.
       dutyMs: 80,
       windowMs: 60_000,
-      onWindow: (window) => windows.push(window),
+      onWindow: (window: ProfileWindow) => windows.push(window),
       ...overrides,
-    } as never);
+    });
 
   it("collects folded stacks from real execution", async () => {
     profiler = build();

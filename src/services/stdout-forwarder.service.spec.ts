@@ -262,7 +262,7 @@ describe("StdoutForwarderService", () => {
     });
 
     it("can be switched off explicitly", () => {
-      const service = build({ redaction: { enabled: false } } as never);
+      const service = build({ redaction: { enabled: false } });
 
       write(service, "password=hunter2\n");
 
@@ -272,7 +272,7 @@ describe("StdoutForwarderService", () => {
     it("honours custom redaction options", () => {
       const service = build({
         redaction: { replacement: "***" },
-      } as never);
+      });
 
       write(service, "password=hunter2\n");
 

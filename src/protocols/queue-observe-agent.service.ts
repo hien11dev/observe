@@ -81,7 +81,10 @@ export class QueueObserveAgentService<Store extends Record<string, unknown>> {
           .getStore()
           ?.has(this.options.traceIdKey);
 
-        return this.asyncLocalStorage.run(new Map<KeyOf<Store>, any>(), () => {
+        // The same map `run` is given, rather than `getStore()` inside the
+        // callback: identical object, one lookup fewer, and it is known to exist.
+        const store = new Map<KeyOf<Store>, any>();
+        return this.asyncLocalStorage.run(store, () => {
           if (hasOuterContext) {
             // If the outer context already has a trace ID
             // ignore the inner context
@@ -94,7 +97,6 @@ export class QueueObserveAgentService<Store extends Record<string, unknown>> {
             return processor(job);
           }
           const traceId = randomUUID();
-          const store = this.asyncLocalStorage.getStore();
           store.set(this.options.traceIdKey, traceId);
 
           if (this.options.jobs?.setAttributes) {

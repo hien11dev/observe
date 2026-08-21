@@ -48,20 +48,22 @@ describe("TracerService", () => {
       protocol: "http",
       attributes: { method: "GET", originalUrl: "/orders" },
       tags: {},
-    } as never);
+    });
     const spanId = registry.internalStartTraceStep(
       traceId,
       "OrdersController",
       "findAll",
       undefined,
     );
+    // The trace was started two lines up, so the step always opens.
+    expect(spanId).toBeDefined();
 
     return als.run(
       new Map<string, unknown>([
         [TRACE_ID_KEY, traceId],
-        [CALLER_METADATA_KEY, spanId],
+        [CALLER_METADATA_KEY, spanId!],
       ]),
-      () => fn(spanId),
+      () => fn(spanId!),
     );
   };
 

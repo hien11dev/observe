@@ -1,4 +1,5 @@
 import { CustomMetric } from "../interfaces/index.js";
+import { remapKeys } from "./remap-keys.util.js";
 
 const CUSTOM_METRICS_KEY_MAP = {
   name: "n",
@@ -40,14 +41,10 @@ export type EncodedCustomMetric = {
 
 export class CustomMetricsEncoder {
   static encode(metric: CustomMetric): EncodedCustomMetric {
-    const encoded: EncodedCustomMetric = {} as EncodedCustomMetric;
-
-    for (const key in metric) {
-      if (CUSTOM_METRICS_KEY_MAP[key as keyof CustomMetric]) {
-        encoded[CUSTOM_METRICS_KEY_MAP[key as keyof CustomMetric] as string] =
-          metric[key];
-      }
-    }
+    const encoded = remapKeys<CustomMetric, EncodedCustomMetric>(
+      metric,
+      CUSTOM_METRICS_KEY_MAP,
+    );
 
     // `tags` and `lastUpdated` are class getters on every metric class, and
     // getters live on the prototype where for...in cannot see them, so they
@@ -55,15 +52,14 @@ export class CustomMetricsEncoder {
     // below. (Plain-object metrics carry them as own properties and are
     // already handled by the loop above; the assignments repeat harmlessly.)
     if (metric.tags) {
-      encoded[CUSTOM_METRICS_KEY_MAP["tags"] as string] = metric.tags;
+      encoded.tg = metric.tags;
     }
     if (metric.lastUpdated !== undefined) {
-      encoded[CUSTOM_METRICS_KEY_MAP["lastUpdated"] as string] =
-        metric.lastUpdated;
+      encoded.lu = metric.lastUpdated;
     }
 
     if (metric.type === "counter" && metric.increase) {
-      encoded[CUSTOM_METRICS_KEY_MAP["increase"] as string] = metric.increase;
+      encoded.iv = metric.increase;
     }
 
     // A summary's whole payload is getters, for the same reason. An empty map
@@ -74,7 +70,12 @@ export class CustomMetricsEncoder {
       for (const key of SUMMARY_KEYS) {
         const value = metric[key];
         if (value && Object.keys(value).length > 0) {
-          encoded[CUSTOM_METRICS_KEY_MAP[key] as string] = value;
+          // One cast for the whole loop: `SUMMARY_KEYS` and the key map are
+          // both keyed by `CustomMetric`, so the target property is known to
+          // exist, but the pairing is not something the compiler can follow
+          // through the indirection.
+          (encoded as Record<string, unknown>)[CUSTOM_METRICS_KEY_MAP[key]] =
+            value;
         }
       }
     }

@@ -23,7 +23,7 @@ export function testObserveOptions(
     forwardLogs: false,
     flushInterval: 60_000,
     ...overrides,
-  } as ObserveOptions;
+  };
 }
 
 /**

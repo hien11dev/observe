@@ -73,8 +73,11 @@ export class SpanSliceRecorder {
 
   /**
    * Records that a span stopped executing, and resumes the enclosing one.
+   *
+   * Accepts an absent id because a step whose caller could not be resolved was
+   * never entered either: the lookup below simply misses and nothing unwinds.
    */
-  exit(spanId: string, at: number = performance.now()): void {
+  exit(spanId: string | undefined, at: number = performance.now()): void {
     const index = this.stack.findIndex((entry) => entry.spanId === spanId);
     if (index === -1) {
       return;

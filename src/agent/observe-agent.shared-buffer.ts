@@ -280,6 +280,9 @@ export class ObserveAgentSharedBuffer {
   }
 
   addNodeRuntimeMetrics(runtimeMetrics: NodeRuntimeMetrics | undefined) {
+    if (!runtimeMetrics) {
+      return;
+    }
     if (!this._mainThreadBuffer) {
       this._mainThreadBuffer = this.createEmptyPayload();
     }
@@ -287,7 +290,7 @@ export class ObserveAgentSharedBuffer {
       RuntimeMetricsEncoder.encode(runtimeMetrics);
   }
 
-  upsertCustomMetric(metric: Counter | Gauge | Summary) {
+  upsertCustomMetric(metric: Counter<any> | Gauge<any> | Summary<any>) {
     if (!this._mainThreadBuffer) {
       this._mainThreadBuffer = this.createEmptyPayload();
     }

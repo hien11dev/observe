@@ -4,7 +4,9 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "target": "ES2023",
-    "lib": ["ES2023"],
+    "lib": [
+      "ES2023"
+    ],
     "outDir": "./dist",
     "esModuleInterop": true,
     "experimentalDecorators": true,
@@ -12,11 +14,14 @@
     "skipLibCheck": true,
     "sourceMap": false,
     "incremental": true,
-    "strict": false,
+    "strict": true,
     "removeComments": true,
     "useUnknownInCatchVariables": false,
     "strictPropertyInitialization": false,
-    "types": ["node", "vitest/globals"]
+    "types": [
+      "node",
+      "vitest/globals"
+    ]
   },
   "include": [
     "src",
@@ -24,5 +29,8 @@
     "vitest.int.config.ts",
     "vitest.setup.ts"
   ],
-  "exclude": ["node_modules", "dist"]
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }

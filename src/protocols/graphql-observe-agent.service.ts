@@ -421,7 +421,7 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
       return undefined;
     }
 
-    store?.set(CALLER_METADATA_KEY as KeyOf<Store>, spanId);
+    store?.set(CALLER_METADATA_KEY, spanId);
 
     return {
       traceId,
@@ -473,7 +473,7 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
     if (!first) {
       return undefined;
     }
-    return (first.originalError as Error | undefined) ?? (first as object);
+    return (first.originalError as Error | undefined) ?? first;
   }
 
   private lookupResolverHandler(
@@ -556,7 +556,7 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
       return;
     }
     for (const [key, value] of Object.entries(attributes)) {
-      store.set(key as KeyOf<Store>, value);
+      store.set(key, value);
     }
   }
 }

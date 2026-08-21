@@ -128,10 +128,9 @@ export interface ObserveOptions {
    * This key is used to authenticate the application with the Observe Agent.
    * Generate this key from the Observe dashboard and make sure to keep it secure.
    *
-   * Sent as `x-api-key` on every ingest request, with `appSecret`. Required
-   * unless the collector runs with `TELEMETRY_PLACEHOLDER_PROJECT_ID` set,
-   * which is a local-development mode only; without them a real collector
-   * answers 401 and the batch is dropped.
+   * Sent as `x-api-key` on every ingest request, alongside `appSecret`.
+   * Without valid credentials the collector answers 401 and the batch is
+   * dropped.
    */
   appKey: string;
 
@@ -150,9 +149,9 @@ export interface ObserveOptions {
    * Base URL of the collector, without a trailing path.
    *
    * One setting for telemetry and profiles both, so the two can never point at
-   * different places. The default is a developer's local collector: any
-   * deployment that is not a laptop must set this, or its telemetry is posted
-   * into nothing.
+   * different places. Defaults to the hosted collector; set `OBSERVE_ENDPOINT`
+   * in the environment to override that without touching this config, which is
+   * how a self-hosted or local collector is usually pointed at.
    *
    * @default 'https://observe-api.nestjs.com'
    */
@@ -495,7 +494,12 @@ export interface ObserveOptions {
      * @example (job) => ({ 'queueName': job.queueName, 'jobName': job.name })
      * @default (job) => ({})
      */
-    setAttributes?: (job: { queueName: string; name: string; id: string }) => {
+    setAttributes?: (job: {
+      queueName: string;
+      name: string;
+      /** Absent until the queue driver has assigned one. */
+      id: string | undefined;
+    }) => {
       [key: string]: string | number | boolean;
     };
   };
@@ -504,8 +508,12 @@ export interface ObserveOptions {
 export type ObserveModuleOptionsWithDefaults =
   Required<CreateObserveModuleOptions> & ObserveOptions;
 
+/**
+ * Implemented by the class passed to `ObserveModule.forRootAsync()` as
+ * `useClass` or `useExisting`.
+ */
 export interface ObserveOptionsFactory {
-  createWhispprOptions(): Promise<ObserveOptions> | ObserveOptions;
+  createObserveOptions(): Promise<ObserveOptions> | ObserveOptions;
 }
 
 export interface ObserveModuleAsyncOptions

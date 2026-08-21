@@ -66,7 +66,7 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
     target.setOnProcessingStartHook(
       (
         transportId: Transport | symbol,
-        ctx: BaseRpcContext | GrpcCall,
+        ctx: unknown,
         done: () => Promise<any>,
       ) => {
         if (transportId === Transport.GRPC) {
@@ -78,10 +78,26 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
     );
 
     target.setOnProcessingEndHook(
-      (transportId: Transport | symbol, ctx: BaseRpcContext | GrpcCall) => {
-        this.endRpcRequestTracing(transportId, ctx);
+      (transportId: Transport | symbol, ctx: unknown) => {
+        this.endRpcRequestTracing(
+          transportId,
+          ctx as BaseRpcContext | GrpcCall,
+        );
       },
     );
+  }
+
+  /**
+   * Names the transport for the snapshot's `protocol` field.
+   *
+   * A custom transport is registered under a symbol rather than a `Transport`
+   * member, and indexing the enum with one yields `undefined` - so every custom
+   * transport used to arrive with no protocol at all.
+   */
+  private toProtocolName(transportId: Transport | symbol): string {
+    return typeof transportId === "symbol"
+      ? transportId.description ?? "custom"
+      : Transport[transportId];
   }
 
   startRpcRequestTracing(
@@ -89,9 +105,11 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
     ctx: BaseRpcContext,
     done: () => Promise<any>,
   ) {
-    this.asyncLocalStorage.run(new Map<KeyOf<Store>, any>(), () => {
+    // The same map `run` is given, rather than `getStore()` inside the callback:
+    // identical object, one lookup fewer, and it is known to exist.
+    const store = new Map<KeyOf<Store>, any>();
+    this.asyncLocalStorage.run(store, () => {
       const traceId = this.options.traceIdGenerator(ctx);
-      const store = this.asyncLocalStorage.getStore();
       store.set(this.options.traceIdKey, traceId);
 
       if (this.options.rpc?.setAttributes) {
@@ -116,7 +134,7 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
         return done();
       }
       this.operationTraceRegistry.startTrace(traceId, {
-        protocol: Transport[transportId],
+        protocol: this.toProtocolName(transportId),
         operationId: this.getOperationIdFromContext(ctx),
         tags: this.options.rpc?.tags,
       });
@@ -130,9 +148,10 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
     call: GrpcCall,
     done: () => Promise<any>,
   ) {
-    this.asyncLocalStorage.run(new Map<KeyOf<Store>, any>(), () => {
+    // As above: the map `run` is given, not looked back up.
+    const store = new Map<KeyOf<Store>, any>();
+    this.asyncLocalStorage.run(store, () => {
       const traceId = this.options.traceIdGenerator(call);
-      const store = this.asyncLocalStorage.getStore();
       store.set(this.options.traceIdKey, traceId);
 
       if (this.options.grpc?.setAttributes) {
@@ -156,7 +175,7 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
           return done();
         }
         this.operationTraceRegistry.startTrace(traceId, {
-          protocol: Transport[transportId],
+          protocol: this.toProtocolName(transportId),
           operationId: call.operationId,
           tags: this.options.grpc?.tags,
         });

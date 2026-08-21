@@ -36,7 +36,7 @@ describe("OperationTraceRegistry", () => {
       protocol: "http",
       attributes: { method: "GET", originalUrl: "/orders" },
       tags: {},
-    } as never);
+    });
 
   describe("abandoning a trace", () => {
     it("frees an abandoned trace entirely - spans and snapshot both", async () => {
@@ -439,7 +439,7 @@ describe("OperationTraceRegistry", () => {
       registry.endTrace("o1", { statusCode: 201, userId: "u-9" });
 
       const snapshot = (await registry.pluckSnapshot("o1")) as RequestSnapshot;
-      expect(snapshot.attributes.statusCode).toBe(201);
+      expect(snapshot.attributes?.statusCode).toBe(201);
       expect(snapshot.userId).toBe("u-9");
     });
 
@@ -472,7 +472,7 @@ describe("OperationTraceRegistry", () => {
         operationId: "orders.find",
         protocol: "TCP",
         tags: {},
-      } as never);
+      });
 
     const failWith = (traceId: string, error: unknown) => {
       const spanId = registry.internalStartTraceStep(
@@ -577,13 +577,13 @@ describe("OperationTraceRegistry", () => {
         "Svc",
         "handle",
         spanId,
-        new Error("deliberate") as never,
+        new Error("deliberate"),
       );
       registry.endTrace("u4", { statusCode: 503 });
 
       const snapshot = (await registry.pluckSnapshot("u4")) as RequestSnapshot;
       // HTTP reads the real response; the fallback must not clobber it.
-      expect(snapshot.attributes.statusCode).toBe(503);
+      expect(snapshot.attributes?.statusCode).toBe(503);
     });
 
     it("outranks a success status code the transport supplied", async () => {
@@ -603,12 +603,12 @@ describe("OperationTraceRegistry", () => {
         "Query",
         "brokenOrder",
         spanId,
-        new Error("deliberate") as never,
+        new Error("deliberate"),
       );
       registry.endTrace("u4b", { statusCode: 200 });
 
       const snapshot = (await registry.pluckSnapshot("u4b")) as RequestSnapshot;
-      expect(snapshot.attributes.statusCode).toBe(500);
+      expect(snapshot.attributes?.statusCode).toBe(500);
     });
 
     it("keeps the internal marker off the shipped snapshot", async () => {

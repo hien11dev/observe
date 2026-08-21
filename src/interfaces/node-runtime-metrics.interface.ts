@@ -15,16 +15,21 @@ export interface NodeRuntimeMetrics {
   gc: {
     count: number;
     totalDuration: number;
+    /**
+     * Per-kind counts for the window. Every member is optional because the
+     * section is reported on every sample, and a window in which nothing was
+     * collected reports it empty rather than omitting it.
+     */
     breakdown?: {
-      minor: {
+      minor?: {
         count: number;
         duration: number;
       };
-      major: {
+      major?: {
         count: number;
         duration: number;
       };
-      incremental: {
+      incremental?: {
         count: number;
         duration: number;
       };
