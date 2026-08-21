@@ -23,6 +23,22 @@
 $ npm install @nestjs/observe
 ```
 
+## Getting credentials
+
+Sign up at **[observe.nestjs.com](https://observe.nestjs.com)** and create a
+service. The dashboard issues an **app key** and an **app secret**, which the
+agent sends on every ingest request.
+
+The secret is shown once and is not retrievable afterwards - store it with the
+rest of your secrets and supply both from the environment:
+
+```bash
+OBSERVE_APP_KEY=...
+OBSERVE_APP_SECRET=...
+```
+
+Without valid credentials the collector answers `401` and telemetry is dropped.
+
 ## Quick start
 
 `createObserveModule()` returns both the dynamic module and the instrumentation

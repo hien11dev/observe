@@ -124,9 +124,10 @@ export interface CreateObserveModuleOptions {
 
 export interface ObserveOptions {
   /**
-   * Application key for the Observe APM.
-   * This key is used to authenticate the application with the Observe Agent.
-   * Generate this key from the Observe dashboard and make sure to keep it secure.
+   * Application key identifying this service to the collector.
+   *
+   * Sign up at https://observe.nestjs.com and create a service; the dashboard
+   * issues the key and secret together.
    *
    * Sent as `x-api-key` on every ingest request, alongside `appSecret`.
    * Without valid credentials the collector answers 401 and the batch is
@@ -135,13 +136,12 @@ export interface ObserveOptions {
   appKey: string;
 
   /**
-   * Application secret for the Observe APM.
-   * This secret is used to authenticate the application with the Observe Agent.
-   * Generate this secret from the Observe dashboard and make sure to keep it secure.
+   * Secret paired with `appKey`, issued with it at https://observe.nestjs.com.
    *
    * Sent as `x-api-secret`. Shown once when the key is issued and not
    * retrievable afterwards, so treat it as you would a password: supply it from
    * the environment rather than committing it alongside the rest of this config.
+   * If it is lost, issue a new pair from the dashboard.
    */
   appSecret: string;
 
