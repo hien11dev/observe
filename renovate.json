@@ -1,0 +1,80 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":semanticCommitTypeAll(chore)",
+    "schedule:weekly"
+  ],
+  "labels": ["dependencies"],
+  "dependencyDashboard": true,
+  "rangeStrategy": "pin",
+  "postUpdateOptions": ["npmDedupe"],
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "prConcurrentLimit": 5,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true
+  },
+  "packageRules": [
+    {
+      "description": "Auto-merge devDependency patch and minor bumps. Every one of these is gated on the CI workflow: Renovate will not merge a PR whose checks have not passed.",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["patch", "minor", "pin", "digest"],
+      "automerge": true
+    },
+    {
+      "description": "Patch bumps of runtime dependencies ship to consumers, so only the patch range auto-merges.",
+      "matchDepTypes": ["dependencies"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    },
+    {
+      "description": "Majors always get a human. CI passing proves this package still builds, not that the upgrade is right for the people installing it.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "addLabels": ["major"]
+    },
+    {
+      "description": "peerDependencies are the public contract - changing a range changes what consumers are allowed to install. Widen rather than pin, and never merge unattended.",
+      "matchDepTypes": ["peerDependencies"],
+      "rangeStrategy": "widen",
+      "automerge": false,
+      "addLabels": ["public-api"]
+    },
+    {
+      "description": "TypeScript and @types/node set the type-checking floor. A minor of either can introduce errors that CI catches but that need a judgement call rather than a merge.",
+      "matchPackageNames": ["typescript", "@types/node"],
+      "automerge": false
+    },
+    {
+      "description": "Nest packages move together and are the framework this instruments; upgrading one without the others is rarely what you want.",
+      "matchPackageNames": ["@nestjs/**"],
+      "groupName": "nestjs"
+    },
+    {
+      "description": "Group the remaining tool families so a routine week is a few PRs rather than a dozen.",
+      "matchPackageNames": ["@grpc/**"],
+      "groupName": "grpc"
+    },
+    {
+      "matchPackageNames": ["@commitlint/**", "husky", "lint-staged"],
+      "groupName": "commit tooling"
+    },
+    {
+      "matchPackageNames": ["vitest", "@vitest/**", "unplugin-swc", "@swc/**"],
+      "groupName": "vitest"
+    },
+    {
+      "matchPackageNames": ["oxlint", "oxlint-tsgolint"],
+      "groupName": "oxlint"
+    },
+    {
+      "description": "GitHub Actions are pinned by tag; digest bumps are noise worth merging automatically.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["patch", "minor", "digest", "pin"],
+      "automerge": true
+    }
+  ]
+}

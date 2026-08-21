@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# A superseded run tells you nothing, and Renovate opens PRs in bursts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20.19 is the engine floor - the version where require(esm) stopped
+        # being flagged. It is tested precisely because dropping below it is
+        # the regression nobody notices locally.
+        node: ["20.19", "22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # Hooks are for developer machines; installing them here just adds a
+      # failure mode to CI.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run lint
+
+      - run: npm run build
+
+      - run: npm test
+
+      - run: npm run test:int
+
+      # The package ships ESM but promises CommonJS consumers can require() it.
+      # Nothing else in the suite would catch a stray top-level await, which
+      # breaks that silently and only for CJS users.
+      - name: require(esm) from CommonJS
+        run: |
+          cd "$(mktemp -d)"
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund "$GITHUB_WORKSPACE" reflect-metadata \
+            @nestjs/common@11 @nestjs/core@11 @nestjs/microservices@11 rxjs >/dev/null 2>&1
+          node -r reflect-metadata -e '
+            const o = require("@nestjs/observe");
+            if (typeof o.createObserveModule !== "function") {
+              throw new Error("createObserveModule missing from the require(esm) surface");
+            }
+            const { ObserveModule, ObserveInstrument } = o.createObserveModule();
+            if (typeof ObserveModule.forRoot !== "function") {
+              throw new Error("ObserveModule.forRoot missing");
+            }
+            if (typeof ObserveInstrument.instanceDecorator !== "function") {
+              throw new Error("ObserveInstrument.instanceDecorator missing");
+            }
+            console.log("require(esm) OK on node " + process.version);
+          '

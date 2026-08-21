@@ -10,7 +10,6 @@ dist/
 coverage/
 
 # configuration
-renovate.json
 /.vscode
 
 # sample
