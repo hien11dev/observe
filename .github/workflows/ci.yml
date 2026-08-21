@@ -14,6 +14,11 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # husky's documented CI opt-out. `npm ci --ignore-scripts` would also skip it,
+  # but @swc/core has a postinstall that vitest's transform depends on.
+  HUSKY: 0
+
 jobs:
   test:
     name: test (node ${{ matrix.node }})
@@ -33,9 +38,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
-      # Hooks are for developer machines; installing them here just adds a
-      # failure mode to CI.
-      - run: npm ci --ignore-scripts
+      - run: npm ci
 
       - run: npm run lint
 
