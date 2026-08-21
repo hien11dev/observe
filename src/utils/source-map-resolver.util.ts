@@ -1,13 +1,19 @@
-import { createRequire } from "node:module";
+/**
+ * `@jridgewell/trace-mapping` is imported statically rather than pulled in on
+ * first use through `createRequire(import.meta.url)`. The shim was valid only
+ * under ESM: consumers whose test runner transpiles this package down to
+ * CommonJS got `const require = ...` on top of the module-scope `require`,
+ * which is a redeclaration - the package failed to load at all under Jest.
+ * It is a hard dependency with no import-time side effects, so binding it
+ * eagerly costs one module parse and keeps this file loadable either way.
+ */
+import {
+  originalPositionFor,
+  sourceContentFor,
+  TraceMap,
+} from "@jridgewell/trace-mapping";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-
-/**
- * The package is loaded synchronously and only on demand, which ESM `import()`
- * cannot do. A CommonJS require bound to this module's URL keeps that lazy,
- * throw-free behaviour intact.
- */
-const require = createRequire(import.meta.url);
 
 /**
  * A stack frame position mapped back to the source it was compiled from.
@@ -27,7 +33,7 @@ const INLINE_MAP_PREFIX = "data:application/json";
 
 interface LoadedMap {
   /** @jridgewell/trace-mapping TraceMap instance. */
-  tracer: unknown;
+  tracer: TraceMap;
   /** Directory the map lives in, for resolving relative `sources` entries. */
   mapDir: string;
 }
@@ -35,41 +41,7 @@ interface LoadedMap {
 /** Parsed maps by compiled-file path; null marks "looked, found none". */
 const mapCache = new Map<string, LoadedMap | null>();
 
-let traceMappingModule: {
-  TraceMap: new (map: unknown) => unknown;
-  originalPositionFor: (
-    tracer: unknown,
-    position: { line: number; column: number },
-  ) => { source: string | null; line: number | null; column: number | null };
-  sourceContentFor: (tracer: unknown, source: string) => string | null;
-} | null = null;
-
-let traceMappingLoadAttempted = false;
-
-/**
- * Loaded on first use rather than at import time, so a process that never enables
- * source maps never pays for it - and a missing install degrades to raw frames
- * instead of taking the app down.
- */
-function loadTraceMapping() {
-  if (traceMappingLoadAttempted) {
-    return traceMappingModule;
-  }
-  traceMappingLoadAttempted = true;
-  try {
-    traceMappingModule = require("@jridgewell/trace-mapping");
-  } catch {
-    traceMappingModule = null;
-  }
-  return traceMappingModule;
-}
-
 function readMapFor(file: string): LoadedMap | null {
-  const traceMapping = loadTraceMapping();
-  if (!traceMapping) {
-    return null;
-  }
-
   let compiled: string;
   try {
     compiled = readFileSync(file, "utf8");
@@ -110,7 +82,7 @@ function readMapFor(file: string): LoadedMap | null {
 
   try {
     return {
-      tracer: new traceMapping.TraceMap(JSON.parse(rawMap)),
+      tracer: new TraceMap(JSON.parse(rawMap)),
       mapDir,
     };
   } catch {
@@ -138,17 +110,12 @@ export function resolveOriginalPosition(
   line: number,
   column: number,
 ): OriginalPosition | undefined {
-  const traceMapping = loadTraceMapping();
-  if (!traceMapping) {
-    return undefined;
-  }
-
   const map = getMap(file);
   if (!map) {
     return undefined;
   }
 
-  const position = traceMapping.originalPositionFor(map.tracer, {
+  const position = originalPositionFor(map.tracer, {
     line,
     // Stack columns are 1-based, source map columns are 0-based.
     column: Math.max(0, column - 1),
@@ -161,7 +128,7 @@ export function resolveOriginalPosition(
   // `sourcesContent` is the reliable path: the original text is embedded in the
   // map, so it works even when the source tree is absent at runtime (a container
   // shipping only dist, for instance).
-  const embedded = traceMapping.sourceContentFor(map.tracer, position.source);
+  const embedded = sourceContentFor(map.tracer, position.source);
 
   return {
     file: position.source.startsWith("/")
