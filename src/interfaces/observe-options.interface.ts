@@ -478,6 +478,13 @@ export interface ObserveOptions {
   };
   /**
    * Jobs configuration options for the Observe APM.
+   *
+   * Covers every handler reported as a job: BullMQ processors, and the
+   * `@Cron`, `@Interval` and `@Timeout` handlers of `@nestjs/schedule`. For a
+   * scheduled handler the scheduler type (`cron`, `interval`, `timeout`)
+   * stands in for `queueName`, the decorator's `name` option - or
+   * `ClassName.methodName` when none was given - for `name`, and every firing
+   * gets a fresh `id`.
    */
   jobs?: {
     /**
@@ -495,9 +502,13 @@ export interface ObserveOptions {
      * @default (job) => ({})
      */
     setAttributes?: (job: {
+      /** The BullMQ queue, or the scheduler type for a scheduled handler. */
       queueName: string;
       name: string;
-      /** Absent until the queue driver has assigned one. */
+      /**
+       * Absent until the queue driver has assigned one. Always present for a
+       * scheduled handler, where it identifies this particular firing.
+       */
       id: string | undefined;
     }) => {
       [key: string]: string | number | boolean;

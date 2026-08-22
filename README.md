@@ -17,7 +17,7 @@
 
 ## Description
 
-`@nestjs/observe` is an observability module for [NestJS](https://nestjs.com) applications. It instruments HTTP, GraphQL, microservice (RPC), and BullMQ queue handlers, collects traces, runtime metrics, custom metrics, and CPU profiles, and ships them to a collector from a detached worker thread so the request path stays untouched.
+`@nestjs/observe` is an observability module for [NestJS](https://nestjs.com) applications. It instruments HTTP, GraphQL, microservice (RPC), BullMQ queue handlers, and `@nestjs/schedule` cron/interval/timeout jobs, collects traces, runtime metrics, custom metrics, and CPU profiles, and ships them to a collector from a detached worker thread so the request path stays untouched.
 
 ```bash
 $ npm install @nestjs/observe
@@ -120,6 +120,7 @@ Protocol integrations are only loaded when you use them, and their packages are 
 - `@nestjs/microservices` - RPC/microservice instrumentation
 - `@nestjs/graphql` - GraphQL operation instrumentation
 - `@nestjs/bullmq` and `bullmq` - queue/job instrumentation
+- `@nestjs/schedule` - scheduled job (`@Cron`, `@Interval`, `@Timeout`) instrumentation
 
 ## Test
 

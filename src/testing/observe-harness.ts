@@ -1,5 +1,6 @@
 import { INestApplication, INestMicroservice } from "@nestjs/common";
 import { ObserveAgentSharedBuffer } from "../agent/observe-agent.shared-buffer.js";
+import { JobSnapshot } from "../interfaces/job-snapshot.interface.js";
 import { ObserveOptions } from "../interfaces/observe-options.interface.js";
 import { RequestSnapshot } from "../interfaces/request-snapshot.interface.js";
 
@@ -105,6 +106,64 @@ export async function waitForSnapshot(
       collected.items.map((s) => ({
         protocol: s.protocol,
         operationId: s.operationId,
+      })),
+    )}`,
+  );
+}
+
+/**
+ * The job-shaped counterpart of `CollectedSnapshots`, for the handlers that run
+ * from a timer or a queue rather than a request.
+ */
+export class CollectedJobSnapshots {
+  readonly items: JobSnapshot[] = [];
+
+  find(name: string): JobSnapshot | undefined {
+    return this.items.find((snapshot) => snapshot.name === name);
+  }
+
+  clear(): void {
+    this.items.length = 0;
+  }
+}
+
+/** Intercepts job snapshots at `ObserveAgentSharedBuffer.insertJobSnapshot`. */
+export function collectJobSnapshots(
+  app: INestApplication | INestMicroservice,
+): CollectedJobSnapshots {
+  const collected = new CollectedJobSnapshots();
+  const buffer = app.get(ObserveAgentSharedBuffer, { strict: false });
+
+  vi.spyOn(buffer, "insertJobSnapshot").mockImplementation(
+    (snapshot: JobSnapshot) => {
+      collected.items.push(snapshot);
+    },
+  );
+
+  return collected;
+}
+
+export async function waitForJobSnapshot(
+  collected: CollectedJobSnapshots,
+  predicate: (snapshot: JobSnapshot) => boolean,
+  timeoutMs = 3000,
+): Promise<JobSnapshot> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const match = collected.items.find(predicate);
+    if (match) {
+      return match;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  throw new Error(
+    `No matching job snapshot within ${timeoutMs}ms. Collected: ${JSON.stringify(
+      collected.items.map((s) => ({
+        queueName: s.queueName,
+        name: s.name,
+        status: s.status,
       })),
     )}`,
   );

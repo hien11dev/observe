@@ -29,6 +29,7 @@ import { GraphQLObserveAgentService } from "./protocols/graphql-observe-agent.se
 import { HttpObserveAgentService } from "./protocols/http-observe-agent.service.js";
 import { QueueObserveAgentService } from "./protocols/queue-observe-agent.service.js";
 import { RpcObserveAgentService } from "./protocols/rpc-observe-agent.service.js";
+import { ScheduleObserveAgentService } from "./protocols/schedule-observe-agent.service.js";
 import { LoggerPatcherService } from "./services/logger-patcher.service.js";
 import { NodeRuntimeMetricsService } from "./services/node-runtime-metrics.service.js";
 import { OperationTraceRegistry } from "./services/operation-trace.registry.js";
@@ -98,6 +99,9 @@ export function createObserveModule<Store extends Record<string, unknown>>(
       // `forwardLogs` is enabled, and it redacts before anything is buffered.
       StdoutForwarderService,
       QueueObserveAgentService,
+      // A no-op unless @nestjs/schedule is installed; it patches the explorer
+      // from its constructor so the patch lands before any handler is found.
+      ScheduleObserveAgentService,
     ],
     exports: [AsyncLocalStorage, TracerService],
   })
@@ -210,6 +214,8 @@ export function createObserveModule<Store extends Record<string, unknown>>(
               // it would put a span for the agent itself at the root of every
               // GraphQL operation it records.
               instance instanceof GraphQLObserveAgentService ||
+              // Same reason: its wrapper runs inside the job traces it opens.
+              instance instanceof ScheduleObserveAgentService ||
               // Nest's discovery machinery, which the GraphQL agent walks to
               // map root fields back to their resolver classes. It has to stay
               // unproxied: ModulesContainer extends Map, and a Map method
