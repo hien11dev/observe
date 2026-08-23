@@ -2,7 +2,6 @@ import { Inject, Injectable, Logger } from "@nestjs/common";
 import { AsyncLocalStorage } from "async_hooks";
 import type { Job, Processor } from "bullmq";
 import { randomUUID } from "crypto";
-import { createRequire } from "module";
 import { ObserveAgentSharedBuffer } from "../agent/observe-agent.shared-buffer.js";
 import {
   JobSnapshot,
@@ -11,6 +10,10 @@ import {
 import { OperationTraceRegistry } from "../services/operation-trace.registry.js";
 import { KeyOf } from "../types/key-of.type.js";
 import { OBSERVE_OPTIONS } from "../observe.constants.js";
+import {
+  describePeerLoadError,
+  loadOptionalPeer,
+} from "../utils/optional-peer.util.js";
 
 /** The `ProcessorDecoratorService` surface this service patches, structurally typed. */
 interface ProcessorDecoratorServiceLike {
@@ -78,33 +81,35 @@ export class QueueObserveAgentService<Store extends Record<string, unknown>> {
 
   /**
    * Loads `@nestjs/bullmq`'s processor decorator without a static import, so a
-   * service that runs no queue need not install the package. Synchronous on
-   * purpose: the prototype is patched from the constructor, strictly before
-   * any processor is decorated. `@nestjs/bullmq` ships CommonJS, so `require`
-   * can load it.
+   * service that runs no queue need not install the package. The prototype is
+   * patched from the constructor, strictly before any processor is decorated.
    *
    * Returns `undefined` when the package is not installed and `null` when it
-   * is, but too old to expose the decorator service.
+   * is, but does not expose the decorator service where expected.
    */
   private loadProcessorDecoratorService():
     | ProcessorDecoratorServiceLike
     | null
     | undefined {
-    const require = createRequire(import.meta.url);
-    try {
-      require.resolve("@nestjs/bullmq");
-    } catch {
+    const result = loadOptionalPeer<{
+      ProcessorDecoratorService?: ProcessorDecoratorServiceLike;
+    }>(
+      "@nestjs/bullmq",
+      "@nestjs/bullmq/dist/instrument/processor-decorator.service.js",
+    );
+    if (!result.installed) {
       return undefined;
     }
-    try {
-      const { ProcessorDecoratorService } =
-        require("@nestjs/bullmq/dist/instrument/processor-decorator.service.js") as {
-          ProcessorDecoratorService?: ProcessorDecoratorServiceLike;
-        };
-      return ProcessorDecoratorService ?? null;
-    } catch {
+    if (result.error) {
+      // The real cause - a version that moved the file, an exports map that
+      // hides it - so the "update to the latest version" advice below is
+      // never the only diagnostic.
+      this.logger.warn(
+        `@nestjs/bullmq is installed but its processor decorator could not be loaded: ${describePeerLoadError(result.error)}`,
+      );
       return null;
     }
+    return result.module?.ProcessorDecoratorService ?? null;
   }
 
   private patchDecorate() {

@@ -47,4 +47,26 @@ describe("RpcObserveAgentService", () => {
     expect(subscribe).not.toHaveBeenCalled();
     expect(() => agent.onModuleDestroy()).not.toThrow();
   });
+
+  describe("getOperationIdFromContext", () => {
+    const getOperationId = (ctx: unknown): string => {
+      const agent = createAgent(() => ({ unsubscribe: vi.fn() }));
+      agent.onModuleInit();
+      return (
+        agent as unknown as {
+          getOperationIdFromContext: (ctx: unknown) => string;
+        }
+      ).getOperationIdFromContext(ctx);
+    };
+
+    it("falls back to getPattern for a custom transport's own context class", () => {
+      expect(getOperationId({ getPattern: () => "custom.pattern" })).toBe(
+        "custom.pattern",
+      );
+    });
+
+    it("answers 'unknown' rather than throwing when a custom context exposes no accessor", () => {
+      expect(getOperationId({})).toBe("unknown");
+    });
+  });
 });

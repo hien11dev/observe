@@ -1,7 +1,6 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { AsyncLocalStorage } from "async_hooks";
 import { randomUUID } from "crypto";
-import { createRequire } from "module";
 import { ObserveAgentSharedBuffer } from "../agent/observe-agent.shared-buffer.js";
 import {
   JobSnapshot,
@@ -10,6 +9,10 @@ import {
 import { OBSERVE_OPTIONS } from "../observe.constants.js";
 import { OperationTraceRegistry } from "../services/operation-trace.registry.js";
 import { KeyOf } from "../types/key-of.type.js";
+import {
+  describePeerLoadError,
+  loadOptionalPeer,
+} from "../utils/optional-peer.util.js";
 
 /**
  * `@nestjs/schedule`'s metadata keys and scheduler-type enum, inlined so the
@@ -85,24 +88,30 @@ export class ScheduleObserveAgentService<
 
   /**
    * Loads the explorer without a static import, so a service that schedules
-   * nothing need not install the package. Synchronous on purpose: a dynamic
-   * `import()` would resolve after provider instantiation, with no guarantee
-   * of landing before the explorer's `onModuleInit` has already wrapped every
-   * handler. `@nestjs/schedule` ships CommonJS, so `require` can load it.
+   * nothing need not install the package. Loaded from the constructor because
+   * a dynamic `import()` would resolve after provider instantiation, with no
+   * guarantee of landing before the explorer's `onModuleInit` has already
+   * wrapped every handler.
    */
   private loadScheduleExplorer(): ScheduleExplorerLike | undefined {
-    try {
-      const require = createRequire(import.meta.url);
-      const { ScheduleExplorer } =
-        require("@nestjs/schedule/dist/schedule.explorer.js") as {
-          ScheduleExplorer?: ScheduleExplorerLike;
-        };
-      return ScheduleExplorer;
-    } catch {
-      // The @nestjs/schedule package is an optional peer. Nothing scheduled,
-      // nothing to patch, and that is not a misconfiguration.
+    const result = loadOptionalPeer<{
+      ScheduleExplorer?: ScheduleExplorerLike;
+    }>("@nestjs/schedule", "@nestjs/schedule/dist/schedule.explorer.js");
+    if (!result.installed) {
+      // Nothing scheduled, nothing to patch, and that is not a
+      // misconfiguration.
       return undefined;
     }
+    if (result.error) {
+      // Installed but the explorer cannot be loaded - a version that moved
+      // the file, say. Worth saying out loud, with the actual cause: the
+      // symptom otherwise is a service whose jobs silently never appear.
+      this.logger.warn(
+        `@nestjs/schedule is installed but its ScheduleExplorer could not be loaded, so scheduled jobs will not be instrumented: ${describePeerLoadError(result.error)}`,
+      );
+      return undefined;
+    }
+    return result.module?.ScheduleExplorer;
   }
 
   private patchScheduleExplorer(): void {

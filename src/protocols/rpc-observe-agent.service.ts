@@ -1,13 +1,13 @@
 import {
   Inject,
   Injectable,
+  Logger,
   OnModuleDestroy,
   OnModuleInit,
 } from "@nestjs/common";
 import { ModulesContainer } from "@nestjs/core";
 import type { BaseRpcContext, Server, Transport } from "@nestjs/microservices";
 import { AsyncLocalStorage } from "async_hooks";
-import { createRequire } from "module";
 import { Subscription } from "rxjs";
 import { ObserveAgentSharedBuffer } from "../agent/observe-agent.shared-buffer.js";
 import { RequestSnapshot } from "../interfaces/index.js";
@@ -16,6 +16,10 @@ import { OperationTraceRegistry } from "../services/operation-trace.registry.js"
 import { TraceSamplerService } from "../services/trace-sampler.service.js";
 import { KeyOf } from "../types/key-of.type.js";
 import { OBSERVE_OPTIONS } from "../observe.constants.js";
+import {
+  describePeerLoadError,
+  loadOptionalPeer,
+} from "../utils/optional-peer.util.js";
 
 /**
  * The `@nestjs/microservices` surface this agent reads, loaded on demand so
@@ -43,6 +47,7 @@ interface GrpcCall<TRequest = any, TMetadata = any> {
 export class RpcObserveAgentService<Store extends Record<string, unknown>>
   implements OnModuleInit, OnModuleDestroy
 {
+  private readonly logger = new Logger(RpcObserveAgentService.name);
   private rpcTargetAddedSubscription: Subscription | undefined;
   /**
    * Assigned in `onModuleInit`. Every use below is reached only through the
@@ -81,21 +86,27 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
 
   /**
    * Loads `@nestjs/microservices` without a static import, so a service that
-   * exposes no microservice need not install the package. Synchronous on
-   * purpose, for the same reason as the schedule agent's loader: the target
-   * registry is subscribed from `onModuleInit`, and a dynamic `import()` would
-   * resolve after a target may already have been announced. The package ships
-   * CommonJS, so `require` can load it.
+   * exposes no microservice need not install the package. Loaded here rather
+   * than lazily because the target registry is subscribed from `onModuleInit`,
+   * and a dynamic `import()` would resolve after a target may already have
+   * been announced.
    */
   private loadMicroservices(): Microservices | undefined {
-    try {
-      const require = createRequire(import.meta.url);
-      return require("@nestjs/microservices") as Microservices;
-    } catch {
-      // The @nestjs/microservices package is an optional peer. No microservice
-      // means no RPC target to hook, and that is not a misconfiguration.
+    const result = loadOptionalPeer<Microservices>("@nestjs/microservices");
+    if (!result.installed) {
+      // No microservice means no RPC target to hook, and that is not a
+      // misconfiguration.
       return undefined;
     }
+    if (!result.module) {
+      // Installed but unloadable is a misconfiguration, and the symptom
+      // otherwise is a service whose RPC operations silently never appear.
+      this.logger.warn(
+        `@nestjs/microservices is installed but could not be loaded, so RPC operations will not be instrumented: ${describePeerLoadError(result.error)}`,
+      );
+      return undefined;
+    }
+    return result.module;
   }
 
   registerRpcHooks(target: Server) {
@@ -280,8 +291,16 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
         return ctx.getChannel();
       case ctx instanceof NatsContext:
         return ctx.getSubject();
-      default:
-        throw new Error(`Unsupported context type: ${ctx.constructor.name}`);
+      default: {
+        // A custom transporter delivers its own context class - expected, per
+        // `toProtocolName` - and there is no universal accessor for its
+        // routing key. Throwing here would fail the message before `done()`
+        // ever ran, so fall back to a conventional accessor when one exists.
+        const pattern = (
+          ctx as { getPattern?: () => unknown }
+        )?.getPattern?.();
+        return typeof pattern === "string" ? pattern : "unknown";
+      }
     }
   }
 }
