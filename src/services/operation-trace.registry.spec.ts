@@ -187,6 +187,39 @@ describe("OperationTraceRegistry", () => {
       expect(root.children?.map((node) => node.methodKey)).toEqual(["child"]);
     });
 
+    it("puts a span whose caller already completed at the root instead of throwing", async () => {
+      startRequest("t6b");
+      const caller = registry.internalStartTraceStep(
+        "t6b",
+        "Interceptor",
+        "intercept",
+        undefined,
+      );
+      // An interceptor's `intercept()` returns its Observable synchronously, so
+      // its span closes - and, having no children yet, loses its `children`
+      // array - before the handler that Nest bound to its async context runs.
+      registry.internalEndTraceStep(
+        "t6b",
+        caller,
+        "Interceptor",
+        "intercept",
+        caller,
+      );
+
+      let late: string | undefined;
+      expect(() => {
+        late = registry.internalStartTraceStep("t6b", "Ctrl", "handle", caller);
+      }).not.toThrow();
+      registry.internalEndTraceStep("t6b", late, "Ctrl", "handle", late);
+      registry.endTrace("t6b");
+
+      const snapshot = await registry.pluckSnapshot("t6b");
+      expect(snapshot!.traces.map((node) => node.methodKey)).toEqual([
+        "intercept",
+        "handle",
+      ]);
+    });
+
     it("uses the span id as the caller id it registers under", async () => {
       startRequest("t7");
       const spanId = registry.internalStartTraceStep(

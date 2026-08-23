@@ -334,13 +334,21 @@ export class OperationTraceRegistry {
       spanId: newNodeId,
     };
 
-    let refsByCaller = this.callerIdsByTraceId.get(traceId)!;
-    if (callerId) {
-      const caller = refsByCaller.get(callerId)!;
+    let refsByCaller = this.callerIdsByTraceId.get(traceId);
+    // A caller that has already completed has had its scratch fields stripped
+    // (`type`, and `children` when it had none), so there is nothing left to
+    // nest under. That happens whenever a callee outlives its caller - most
+    // commonly a handler that Nest bound (`AsyncResource.bind` in its
+    // interceptors consumer) to the async context of an interceptor whose
+    // `intercept()` returned synchronously. Fall back to the root rather than
+    // throw into the request: the mirror case, a step ending after its caller
+    // did, is already tolerated in `internalEndTraceStep`.
+    const caller = callerId ? refsByCaller?.get(callerId) : undefined;
+    if (caller?.type === "start") {
       caller.children.push(newNode);
       newNode.parent = caller;
     } else {
-      // No caller means insert trace at the root level
+      // No (live) caller means insert trace at the root level
       snapshot.traces.push(newNode);
     }
 
