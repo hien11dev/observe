@@ -220,6 +220,36 @@ describe("OperationTraceRegistry", () => {
       ]);
     });
 
+    it("puts a manual span whose caller already completed at the root instead of throwing", async () => {
+      startRequest("t6c");
+      const caller = registry.internalStartTraceStep(
+        "t6c",
+        "Interceptor",
+        "intercept",
+        undefined,
+      );
+      // Same shape as the auto-span case above, reached through the public
+      // TracerService API instead: the manual span opens under a caller whose
+      // `children` array is already gone.
+      registry.internalEndTraceStep(
+        "t6c",
+        caller,
+        "Interceptor",
+        "intercept",
+        caller,
+      );
+
+      await expect(
+        registry.createManualSpan("t6c", caller, "manual-step", () => "ok"),
+      ).resolves.toBe("ok");
+      registry.endTrace("t6c");
+
+      const snapshot = await registry.pluckSnapshot("t6c");
+      expect(
+        snapshot!.traces.map((node) => ("name" in node ? node.name : node.methodKey)),
+      ).toEqual(["intercept", "manual-step"]);
+    });
+
     it("uses the span id as the caller id it registers under", async () => {
       startRequest("t7");
       const spanId = registry.internalStartTraceStep(

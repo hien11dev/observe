@@ -335,22 +335,7 @@ export class OperationTraceRegistry {
     };
 
     let refsByCaller = this.callerIdsByTraceId.get(traceId);
-    // A caller that has already completed has had its scratch fields stripped
-    // (`type`, and `children` when it had none), so there is nothing left to
-    // nest under. That happens whenever a callee outlives its caller - most
-    // commonly a handler that Nest bound (`AsyncResource.bind` in its
-    // interceptors consumer) to the async context of an interceptor whose
-    // `intercept()` returned synchronously. Fall back to the root rather than
-    // throw into the request: the mirror case, a step ending after its caller
-    // did, is already tolerated in `internalEndTraceStep`.
-    const caller = callerId ? refsByCaller?.get(callerId) : undefined;
-    if (caller?.type === "start") {
-      caller.children.push(newNode);
-      newNode.parent = caller;
-    } else {
-      // No (live) caller means insert trace at the root level
-      snapshot.traces.push(newNode);
-    }
+    this.attachToCaller(snapshot, refsByCaller, callerId, newNode);
 
     if (!refsByCaller) {
       refsByCaller = new Map<string, OngoingTraceEventNode>();
@@ -359,6 +344,38 @@ export class OperationTraceRegistry {
     refsByCaller.set(newNodeId, newNode);
 
     return newNodeId;
+  }
+
+  /**
+   * Nests a freshly opened node under its caller when that caller is still
+   * live, and at the trace root otherwise.
+   *
+   * A caller that has already completed has had its scratch fields stripped
+   * (`type`, and `children` when it had none), so there is nothing left to
+   * nest under. That happens whenever a callee outlives its caller - most
+   * commonly a handler that Nest bound (`AsyncResource.bind` in its
+   * interceptors consumer) to the async context of an interceptor whose
+   * `intercept()` returned synchronously. Fall back to the root rather than
+   * throw into the request: the mirror case, a step ending after its caller
+   * did, is already tolerated in `internalEndTraceStep`. Auto and manual spans
+   * both attach through here, so they share the tolerance.
+   */
+  private attachToCaller(
+    snapshot: SnapshotWithSignal,
+    refsByCaller:
+      | Map<string | undefined, OngoingTraceEventNode>
+      | undefined,
+    callerId: string | undefined,
+    newNode: OngoingTraceEventNode,
+  ): void {
+    const caller = callerId ? refsByCaller?.get(callerId) : undefined;
+    if (caller?.type === "start") {
+      caller.children.push(newNode);
+      newNode.parent = caller;
+    } else {
+      // No (live) caller means insert trace at the root level
+      snapshot.traces.push(newNode);
+    }
   }
 
   internalEndTraceStep(
@@ -620,12 +637,16 @@ export class OperationTraceRegistry {
   ) {
     // await new Promise((resolve) => setImmediate(resolve));
 
+    // The caller may already have completed (its entry survives completion in
+    // `refsByCaller`); it is still the right source for the class and method
+    // labels, which outlive completion. Where the new span *attaches* is
+    // decided by `attachToCaller`, which nests only under a live caller.
     const activeSpan = this.getActiveSpan(traceId, callerId);
-    if (!activeSpan) {
+    const snapshot = this.traceSnapshots.get(traceId);
+    if (!activeSpan || !snapshot) {
       return spanFunction(new TraceSpanDelegate("", name, {}));
     }
 
-    const snapshot = this.traceSnapshots.get(traceId);
     // Book the span in the same ledger auto spans use. Completion goes through
     // internalEndTraceStep, which increments refsMarkedAsComplete - without
     // the matching increment here, every completed manual span pushed the
@@ -633,9 +654,7 @@ export class OperationTraceRegistry {
     // one manual span read as complete: pluckSnapshot then shipped a
     // half-built tree whose ongoing node still held its circular `parent`
     // reference, and JSON.stringify threw away the whole flush window.
-    if (snapshot) {
-      snapshot.refsCounter += 1;
-    }
+    snapshot.refsCounter += 1;
 
     const newNodeId = randomUUID();
     const startTime = performance.now();
@@ -657,11 +676,11 @@ export class OperationTraceRegistry {
       startTime,
       startOffset: this.toStartOffset(snapshot, startTime),
       children: [],
-      parent: activeSpan,
     };
-    activeSpan.children.push(manualSpan);
+    const refsByCaller = this.callerIdsByTraceId.get(traceId);
+    this.attachToCaller(snapshot, refsByCaller, callerId, manualSpan);
 
-    this.callerIdsByTraceId.get(traceId)?.set(newNodeId, manualSpan);
+    refsByCaller?.set(newNodeId, manualSpan);
 
     const onResponse = (res: unknown) => {
       // setImmediate
