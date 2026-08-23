@@ -1,8 +1,8 @@
-import { ProcessorDecoratorService } from "@nestjs/bullmq/dist/instrument/processor-decorator.service.js";
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { AsyncLocalStorage } from "async_hooks";
-import { Job, Processor } from "bullmq";
+import type { Job, Processor } from "bullmq";
 import { randomUUID } from "crypto";
+import { createRequire } from "module";
 import { ObserveAgentSharedBuffer } from "../agent/observe-agent.shared-buffer.js";
 import {
   JobSnapshot,
@@ -11,6 +11,15 @@ import {
 import { OperationTraceRegistry } from "../services/operation-trace.registry.js";
 import { KeyOf } from "../types/key-of.type.js";
 import { OBSERVE_OPTIONS } from "../observe.constants.js";
+
+/** The `ProcessorDecoratorService` surface this service patches, structurally typed. */
+interface ProcessorDecoratorServiceLike {
+  prototype?: {
+    decorate?: (
+      processor: Processor<unknown, unknown>,
+    ) => (job: Job) => unknown;
+  };
+}
 
 @Injectable()
 export class QueueObserveAgentService<Store extends Record<string, unknown>> {
@@ -67,7 +76,44 @@ export class QueueObserveAgentService<Store extends Record<string, unknown>> {
     return metadata;
   }
 
+  /**
+   * Loads `@nestjs/bullmq`'s processor decorator without a static import, so a
+   * service that runs no queue need not install the package. Synchronous on
+   * purpose: the prototype is patched from the constructor, strictly before
+   * any processor is decorated. `@nestjs/bullmq` ships CommonJS, so `require`
+   * can load it.
+   *
+   * Returns `undefined` when the package is not installed and `null` when it
+   * is, but too old to expose the decorator service.
+   */
+  private loadProcessorDecoratorService():
+    | ProcessorDecoratorServiceLike
+    | null
+    | undefined {
+    const require = createRequire(import.meta.url);
+    try {
+      require.resolve("@nestjs/bullmq");
+    } catch {
+      return undefined;
+    }
+    try {
+      const { ProcessorDecoratorService } =
+        require("@nestjs/bullmq/dist/instrument/processor-decorator.service.js") as {
+          ProcessorDecoratorService?: ProcessorDecoratorServiceLike;
+        };
+      return ProcessorDecoratorService ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   private patchDecorate() {
+    const ProcessorDecoratorService = this.loadProcessorDecoratorService();
+    if (ProcessorDecoratorService === undefined) {
+      // The @nestjs/bullmq package is an optional peer. No queue means no
+      // processor to wrap, and that is not a misconfiguration.
+      return;
+    }
     if (!ProcessorDecoratorService?.prototype) {
       this.logger.warn(
         "ProcessorDecoratorService is not available. Please, update to the latest version of @nestjs/bullmq. Skipping patching.",

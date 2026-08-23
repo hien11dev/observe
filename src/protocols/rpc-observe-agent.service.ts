@@ -5,18 +5,9 @@ import {
   OnModuleInit,
 } from "@nestjs/common";
 import { ModulesContainer } from "@nestjs/core";
-import {
-  BaseRpcContext,
-  KafkaContext,
-  MqttContext,
-  NatsContext,
-  RedisContext,
-  RmqContext,
-  Server,
-  TcpContext,
-  Transport,
-} from "@nestjs/microservices";
+import type { BaseRpcContext, Server, Transport } from "@nestjs/microservices";
 import { AsyncLocalStorage } from "async_hooks";
+import { createRequire } from "module";
 import { Subscription } from "rxjs";
 import { ObserveAgentSharedBuffer } from "../agent/observe-agent.shared-buffer.js";
 import { RequestSnapshot } from "../interfaces/index.js";
@@ -25,6 +16,22 @@ import { OperationTraceRegistry } from "../services/operation-trace.registry.js"
 import { TraceSamplerService } from "../services/trace-sampler.service.js";
 import { KeyOf } from "../types/key-of.type.js";
 import { OBSERVE_OPTIONS } from "../observe.constants.js";
+
+/**
+ * The `@nestjs/microservices` surface this agent reads, loaded on demand so
+ * the package stays an optional peer: the transport enum, and the context
+ * classes the operation id is read from.
+ */
+type Microservices = Pick<
+  typeof import("@nestjs/microservices"),
+  | "Transport"
+  | "KafkaContext"
+  | "MqttContext"
+  | "NatsContext"
+  | "RedisContext"
+  | "RmqContext"
+  | "TcpContext"
+>;
 
 interface GrpcCall<TRequest = any, TMetadata = any> {
   request: TRequest;
@@ -37,6 +44,12 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
   implements OnModuleInit, OnModuleDestroy
 {
   private rpcTargetAddedSubscription: Subscription | undefined;
+  /**
+   * Assigned in `onModuleInit`. Every use below is reached only through the
+   * hooks registered there, after a successful load - a service without the
+   * package has no RPC target to hook.
+   */
+  private microservices: Microservices | undefined;
 
   constructor(
     private readonly asyncLocalStorage: AsyncLocalStorage<
@@ -51,6 +64,10 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
   ) {}
 
   onModuleInit() {
+    this.microservices = this.loadMicroservices();
+    if (!this.microservices) {
+      return;
+    }
     this.rpcTargetAddedSubscription = this.modulesContainer
       .getRpcTargetRegistry?.<Server>()
       .subscribe((target) => this.registerRpcHooks(target));
@@ -62,6 +79,25 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
     }
   }
 
+  /**
+   * Loads `@nestjs/microservices` without a static import, so a service that
+   * exposes no microservice need not install the package. Synchronous on
+   * purpose, for the same reason as the schedule agent's loader: the target
+   * registry is subscribed from `onModuleInit`, and a dynamic `import()` would
+   * resolve after a target may already have been announced. The package ships
+   * CommonJS, so `require` can load it.
+   */
+  private loadMicroservices(): Microservices | undefined {
+    try {
+      const require = createRequire(import.meta.url);
+      return require("@nestjs/microservices") as Microservices;
+    } catch {
+      // The @nestjs/microservices package is an optional peer. No microservice
+      // means no RPC target to hook, and that is not a misconfiguration.
+      return undefined;
+    }
+  }
+
   registerRpcHooks(target: Server) {
     target.setOnProcessingStartHook(
       (
@@ -69,7 +105,7 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
         ctx: unknown,
         done: () => Promise<any>,
       ) => {
-        if (transportId === Transport.GRPC) {
+        if (transportId === this.microservices!.Transport.GRPC) {
           this.startGrpcRequestTracing(transportId, ctx as GrpcCall, done);
           return;
         }
@@ -97,7 +133,7 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
   private toProtocolName(transportId: Transport | symbol): string {
     return typeof transportId === "symbol"
       ? transportId.description ?? "custom"
-      : Transport[transportId];
+      : this.microservices!.Transport[transportId];
   }
 
   startRpcRequestTracing(
@@ -198,7 +234,7 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
     }
     setTimeout(async () => {
       let userId: string | undefined;
-      if (transportId === Transport.GRPC) {
+      if (transportId === this.microservices!.Transport.GRPC) {
         if (this.options.grpc?.getUserId) {
           userId = this.options.grpc?.getUserId?.(ctx as GrpcCall);
         }
@@ -225,6 +261,14 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
   }
 
   private getOperationIdFromContext(ctx: BaseRpcContext): string {
+    const {
+      KafkaContext,
+      MqttContext,
+      NatsContext,
+      RedisContext,
+      RmqContext,
+      TcpContext,
+    } = this.microservices!;
     switch (true) {
       case ctx instanceof KafkaContext:
       case ctx instanceof MqttContext:
