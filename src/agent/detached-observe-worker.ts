@@ -56,6 +56,46 @@ export const detachedObserveWorker = () => {
   const AUTH_REJECTION_REPORT_EVERY = 720;
 
   /**
+   * When sending may resume after the collector answered 429.
+   *
+   * A 429 means the account is out of credits or over budget, and that does
+   * not change batch to batch: retrying at the flush cadence is sixty more
+   * refusals in five minutes, each costing the collector a request and this
+   * process a log line. So sends pause outright. The main thread keeps
+   * overwriting the shared buffer with newer batches in the meantime - the
+   * buffer holds exactly one, so pausing drops data by replacement rather
+   * than growing a queue - and once the pause lapses the next flush goes out
+   * normally. If the collector is still refusing, it answers 429 again and
+   * the pause restarts.
+   */
+  let rateLimitedUntil = 0;
+
+  /**
+   * How long to pause when the 429 carries no usable Retry-After. Long enough
+   * that a depleted account is not being polled, short enough that a topped-up
+   * one resumes within minutes.
+   */
+  const RATE_LIMIT_PAUSE_MS = 5 * 60 * 1000;
+
+  /** Ceiling on a server-sent Retry-After, so a bad header cannot park the
+   * worker for a day. */
+  const RATE_LIMIT_PAUSE_MAX_MS = 60 * 60 * 1000;
+
+  /**
+   * How long to pause for, from the response's Retry-After when it carries
+   * one. Only the delta-seconds form is parsed - the HTTP-date form is rare
+   * on rate limits and mis-parsing it risks an enormous pause - and anything
+   * absent, malformed, or out of range falls back to the default.
+   */
+  const rateLimitPauseMs = (response: { headers: Headers }) => {
+    const retryAfter = Number(response.headers.get("retry-after"));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.min(retryAfter * 1000, RATE_LIMIT_PAUSE_MAX_MS);
+    }
+    return RATE_LIMIT_PAUSE_MS;
+  };
+
+  /**
    * How long to block waiting for the main thread to release the lock, and how
    * long to sleep when the buffer holds nothing.
    *
@@ -108,6 +148,13 @@ export const detachedObserveWorker = () => {
    * immediately or to sleep first.
    */
   const sendInstrumentationJsonData = async () => {
+    if (Date.now() < rateLimitedUntil) {
+      // Rate-limited: not even worth taking the lock. Returning false routes
+      // through the idle sleep, and the main thread goes on replacing the
+      // buffered batch with fresher ones.
+      return false;
+    }
+
     waitWhileLocked();
 
     if (!acquireLock()) {
@@ -166,6 +213,19 @@ export const detachedObserveWorker = () => {
               `Error: Telemetry still rejected (${response.status}); ${authRejections} batches dropped since start-up.`,
             );
           }
+          return true;
+        }
+        if (response.status === 429) {
+          const pauseMs = rateLimitPauseMs(response);
+          rateLimitedUntil = Date.now() + pauseMs;
+
+          // One line per pause window, so a long depletion reads as one line
+          // every few minutes rather than one per flush. The batch is dropped
+          // - `finally` clears the buffer - same as every other failure here.
+          parentPort.postMessage(
+            `Error: Telemetry rate-limited (429) - the account may be out of credits or over budget. ` +
+              `Pausing sends for ${Math.round(pauseMs / 60000)} minute(s); batches in the meantime are dropped.`,
+          );
           return true;
         }
         // Read as text, defensively: an error body is not guaranteed to be

@@ -11,6 +11,17 @@ import { ProfileWindow } from "./cpu-profiler.service.js";
  */
 const MAX_PENDING_WINDOWS = 2;
 
+/**
+ * How long to stop uploading after a 429, when the response carries no usable
+ * Retry-After. Out-of-credits does not clear between windows, so retrying at
+ * the once-a-minute cadence only spends requests on refusals.
+ */
+const RATE_LIMIT_PAUSE_MS = 5 * 60 * 1000;
+
+/** Ceiling on a server-sent Retry-After, so a bad header cannot park uploads
+ * for a day. */
+const RATE_LIMIT_PAUSE_MAX_MS = 60 * 60 * 1000;
+
 export interface ProfileUploaderOptions {
   endpoint: string;
   serviceNode: string;
@@ -37,6 +48,13 @@ export class ProfileUploader {
 
   private inFlight = false;
 
+  /**
+   * When uploads may resume after a 429. Windows enqueued while paused sit in
+   * `pending` under its usual two-window cap, so a lapsed pause resumes with
+   * the freshest profiles rather than a backlog.
+   */
+  private rateLimitedUntil = 0;
+
   constructor(private readonly options: ProfileUploaderOptions) {}
 
   enqueue(window: ProfileWindow, sampleRateHz: number): void {
@@ -58,7 +76,7 @@ export class ProfileUploader {
    * duplicate rather than an addition.
    */
   async drain(): Promise<void> {
-    if (this.inFlight) {
+    if (this.inFlight || Date.now() < this.rateLimitedUntil) {
       return;
     }
     this.inFlight = true;
@@ -124,6 +142,21 @@ export class ProfileUploader {
         return true;
       }
 
+      if (response.status === 429) {
+        // Out of credits or over budget. Pause outright instead of retrying
+        // every minute: the answer will not change window to window, and each
+        // retry is a request spent on a refusal. The window stays queued -
+        // `drain` skips while paused - so the first upload after the pause
+        // carries the freshest profiles the two-window cap kept.
+        const pauseMs = this.rateLimitPauseMs(response);
+        this.rateLimitedUntil = Date.now() + pauseMs;
+        this.options.onError?.(
+          `profile upload rate-limited (429) - the account may be out of credits or over budget; ` +
+            `pausing uploads for ${Math.round(pauseMs / 60000)} minute(s)`,
+        );
+        return false;
+      }
+
       if (response.status === 401 || response.status === 403) {
         // A credential problem, not an entitlement one. Reported specifically
         // and not discarded: it is a misconfiguration the operator can fix,
@@ -167,6 +200,20 @@ export class ProfileUploader {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * How long to pause for, honouring the response's Retry-After when it
+   * carries one. Only the delta-seconds form is parsed - the HTTP-date form
+   * is rare on rate limits and mis-parsing it risks an enormous pause - and
+   * anything absent, malformed, or out of range falls back to the default.
+   */
+  private rateLimitPauseMs(response: Response): number {
+    const retryAfter = Number(response.headers.get("retry-after"));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.min(retryAfter * 1000, RATE_LIMIT_PAUSE_MAX_MS);
+    }
+    return RATE_LIMIT_PAUSE_MS;
   }
 
   pendingCount(): number {
