@@ -18,6 +18,10 @@ import {
 import { NodeRuntimeMetricsService } from "../services/node-runtime-metrics.service.js";
 import { detachedObserveWorker } from "./detached-observe-worker.js";
 import { ObserveAgentSharedBuffer } from "./observe-agent.shared-buffer.js";
+import {
+  createTelemetrySanitizer,
+  SECTION_SHAPES,
+} from "./telemetry-wire-contract.js";
 
 const DEFAULT_RUNTIME_METRICS_INTERVAL = 60000; // 60 seconds
 const MIN_RUNTIME_METRICS_INTERVAL = 30000; // 30 seconds
@@ -234,20 +238,28 @@ export class ObserveAgentWorker implements OnModuleInit, OnApplicationShutdown {
 
   initializeWorker() {
     this.warnIfCredentialsSentInClear();
-    this.worker = new Worker(`(${detachedObserveWorker.toString()})()`, {
-      eval: true,
-      workerData: {
-        sharedBuffer: this.observeAgentSharedBuffer.sharedBuffer,
-        // Passed in rather than read from the environment inside the worker:
-        // the worker is a stringified function with no access to this module's
-        // configuration.
-        config: {
-          endpoint: this.endpoint,
-          appKey: this.options.appKey,
-          appSecret: this.options.appSecret,
+    // The sanitizer factory is inlined as the worker function's argument: the
+    // worker is eval'd source with no module scope, so code it needs has to
+    // travel as source, and data (the wire shapes are plain JSON) as
+    // `workerData`. The factory is written self-contained for exactly this.
+    this.worker = new Worker(
+      `(${detachedObserveWorker.toString()})(${createTelemetrySanitizer.toString()})`,
+      {
+        eval: true,
+        workerData: {
+          sharedBuffer: this.observeAgentSharedBuffer.sharedBuffer,
+          // Passed in rather than read from the environment inside the worker:
+          // the worker is a stringified function with no access to this
+          // module's configuration.
+          config: {
+            endpoint: this.endpoint,
+            appKey: this.options.appKey,
+            appSecret: this.options.appSecret,
+            wireShapes: SECTION_SHAPES,
+          },
         },
       },
-    });
+    );
 
     this.worker.on("message", (msg) => this.handleMessage(msg));
     this.worker.on("error", (error) => this.handleError(error));

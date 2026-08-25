@@ -1,4 +1,12 @@
-export const detachedObserveWorker = () => {
+import type { createTelemetrySanitizer } from "./telemetry-wire-contract.js";
+
+export const detachedObserveWorker = (
+  // The factory's *source* is inlined as this argument when the worker script
+  // is assembled (see `ObserveAgentWorker.initializeWorker`) - a stringified
+  // function cannot import it. Type-only import above; a value import would
+  // compile and then throw inside the worker.
+  createSanitizer?: typeof createTelemetrySanitizer,
+) => {
   // This function body is stringified via .toString() and executed as a
   // standalone worker script, so it can't use static ES imports and must
   // require() its dependencies at runtime instead.
@@ -18,6 +26,16 @@ export const detachedObserveWorker = () => {
   const decoder = new TextDecoder();
 
   const telemetryUrl = `${config.endpoint}/applications/telemetry`;
+
+  /**
+   * Built here, used only when the collector answers 400. The shapes travel
+   * through `workerData` (they are plain JSON); the factory travels as source.
+   * Healthy batches never touch this - the flush path stays gzip-and-send.
+   */
+  const sanitizer =
+    typeof createSanitizer === "function" && config.wireShapes
+      ? createSanitizer(config.wireShapes)
+      : null;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -141,6 +159,80 @@ export const detachedObserveWorker = () => {
   const sleep = (ms: number) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
+  const gzipAsync = (data: string): Promise<Buffer> =>
+    new Promise((resolve, reject) =>
+      zlib.gzip(data, (err: Error | null, compressed: Buffer) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(compressed);
+        }
+      }),
+    );
+
+  const postBatch = async (json: string) =>
+    fetch(telemetryUrl, {
+      method: "POST",
+      headers,
+      body: await gzipAsync(json),
+    });
+
+  /**
+   * Last resort for a 400: brings the batch into contract entry by entry and
+   * re-sends it once, so one bad entry costs itself rather than the batch.
+   *
+   * This is the only place the payload is ever parsed and re-serialized, and
+   * it runs on this worker thread, only for a batch the collector has already
+   * refused - a healthy application never pays for it. No retry loop: if the
+   * repaired batch is refused again the problem is not one the contract
+   * describes, and the generic error path reports it.
+   *
+   * Returns whether the repair path handled the batch (repaired and re-sent,
+   * whatever the outcome); false means nothing was repairable and the caller
+   * should report the original refusal.
+   */
+  const repairAndResend = async (json: string): Promise<boolean> => {
+    if (!sanitizer) {
+      return false;
+    }
+    try {
+      const payload = JSON.parse(json);
+      const repair = sanitizer.sanitizeBatch(payload);
+      if (!repair.changed) {
+        return false;
+      }
+
+      const shown = repair.problems.slice(0, 5).join("; ");
+      const remainder = repair.problems.length - 5;
+      const summary =
+        shown +
+        (remainder > 0 ? ` (and ${remainder} more)` : "") +
+        (repair.dropped > 0
+          ? `; dropped ${repair.dropped} unsalvageable entr${repair.dropped === 1 ? "y" : "ies"}`
+          : "");
+
+      const retry = await postBatch(JSON.stringify(payload));
+      if (retry.ok) {
+        // Error-level on purpose: the send recovered, but something produced
+        // out-of-contract telemetry and the field names here are the lead.
+        parentPort.postMessage(
+          `Error: Telemetry batch was rejected (400) and repaired: ${summary}. The repaired batch was sent.`,
+        );
+      } else {
+        const retryBody = await retry.text().catch(() => "");
+        parentPort.postMessage(
+          `Error: Telemetry batch was rejected (400), repaired (${summary}), and rejected again ` +
+            `(${retry.status})${retryBody ? ` - ${retryBody.slice(0, 500)}` : ""}. The batch was dropped.`,
+        );
+      }
+      return true;
+    } catch {
+      // An unparsable batch or a transport failure on the retry: fall back to
+      // reporting the original refusal.
+      return false;
+    }
+  };
+
   /**
    * Sends one batch, if there is one to send.
    *
@@ -175,21 +267,7 @@ export const detachedObserveWorker = () => {
       const jsonBytes = buffer.slice(8, 8 + jsonLength);
       const jsonStr = decoder.decode(jsonBytes);
 
-      const compressed = await new Promise((resolve, reject) =>
-        zlib.gzip(jsonStr, (err: Error | null, compressed: Buffer) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(compressed);
-          }
-        }),
-      );
-
-      const response = await fetch(telemetryUrl, {
-        method: "POST",
-        headers,
-        body: compressed as Buffer,
-      });
+      const response = await postBatch(jsonStr);
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
@@ -226,6 +304,9 @@ export const detachedObserveWorker = () => {
             `Error: Telemetry rate-limited (429) - the account may be out of credits or over budget. ` +
               `Pausing sends for ${Math.round(pauseMs / 60000)} minute(s); batches in the meantime are dropped.`,
           );
+          return true;
+        }
+        if (response.status === 400 && (await repairAndResend(jsonStr))) {
           return true;
         }
         // Read as text, defensively: an error body is not guaranteed to be

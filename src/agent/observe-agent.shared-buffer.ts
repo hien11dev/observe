@@ -19,8 +19,8 @@ import {
 import { CustomMetric } from "../interfaces/custom-metric.interface.js";
 import { JobSnapshot } from "../interfaces/job-snapshot.interface.js";
 import { NodeRuntimeMetrics } from "../interfaces/node-runtime-metrics.interface.js";
-import { RequestSnapshot } from "../interfaces/request-snapshot.interface.js";
 import { ObserveModuleOptionsWithDefaults } from "../interfaces/observe-options.interface.js";
+import { RequestSnapshot } from "../interfaces/request-snapshot.interface.js";
 import { OBSERVE_OPTIONS } from "../observe.constants.js";
 
 const SHARED_BUFFER_SIZE = 1024 * 1024 * 16; // 16 MB
@@ -361,8 +361,12 @@ export class ObserveAgentSharedBuffer {
 
     const buffered = this._mainThreadBuffer.logs;
     for (const log of logs) {
+      // The `typeof` guard is not redundant with the type: entries arrive from
+      // a patched `process.stdout.write`, where a caller passing something
+      // unexpected must not crash the host - flush-time sanitization drops the
+      // malformed entry instead.
       const entry =
-        log.text.length > MAX_LOG_ENTRY_LENGTH
+        typeof log.text === "string" && log.text.length > MAX_LOG_ENTRY_LENGTH
           ? { ...log, text: this.truncateLogText(log.text) }
           : log;
 

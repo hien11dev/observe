@@ -1,4 +1,4 @@
-import { validateTelemetryPayload } from "../testing/telemetry-wire-contract.js";
+import { validateTelemetryPayload } from "../agent/telemetry-wire-contract.js";
 import { Counter } from "../custom-metrics/counter.js";
 import { Gauge } from "../custom-metrics/gauge.js";
 import { Summary } from "../custom-metrics/summary.js";
