@@ -78,6 +78,22 @@ export interface CreateObserveModuleOptions {
   attachTraceIdToLogs?: boolean;
 
   /**
+   * Excludes providers from instrumentation. Return true for an instance that
+   * should stay untouched - no proxy is placed around it and none of its
+   * methods produce spans.
+   *
+   * Runs before the built-in checks, so it also shields providers that
+   * cannot even be inspected safely: some libraries (nestjs-cls proxy
+   * providers, for instance) register proxies that throw on any property
+   * access outside their own context. Those are skipped automatically when
+   * inspection throws, but this hook lets you exclude them - or anything
+   * else - explicitly.
+   * @example (instance) => instance instanceof MyUninstrumentableService
+   * @default () => false
+   */
+  skipInstrumentation?: (instance: unknown) => boolean;
+
+  /**
    * Attaches the source around each in-app stack frame to captured errors, so the
    * throw site can be shown with its code rather than just a file and line.
    *

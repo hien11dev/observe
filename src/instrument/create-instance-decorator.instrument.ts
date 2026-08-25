@@ -93,6 +93,19 @@ export function createInstanceDecorator<T extends Record<string, unknown>>(
         callerId,
       );
 
+      // No step means the registry holds no snapshot for this trace id: the
+      // request was dropped by `http.ignore` or sampled out, but its store
+      // still carries the id - log correlation needs it there. Nothing was
+      // opened, so nothing must be closed; without this bail-out every
+      // provider call on an ignored route logged a registry error.
+      if (newStepId === undefined) {
+        try {
+          return callUntraced(this, args);
+        } finally {
+          spec.setActive(false);
+        }
+      }
+
       const onReturnValue = (res: unknown) => {
         operationTraceRegistry.internalEndTraceStep(
           requestId,
@@ -186,6 +199,22 @@ export function createInstanceDecorator<T extends Record<string, unknown>>(
       return instance;
     }
 
+    // Native private members (`this.#x`) are branded to the instance itself,
+    // and no proxy trap can satisfy that check: a method invoked with the
+    // proxy as its receiver throws "Receiver must be an instance of class".
+    // Such classes get the raw instance as receiver instead - trading away
+    // nested `this.other()` spans (those calls no longer pass through the
+    // proxy) for methods that run at all.
+    let hasPrivateMembers: boolean;
+    try {
+      hasPrivateMembers = usesNativePrivateMembers(instance);
+    } catch {
+      // Reading the prototype ran a trap that threw (nestjs-cls proxy
+      // providers do this outside a CLS context). An instance that cannot be
+      // inspected cannot be instrumented; hand it back untouched.
+      return instance;
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     const methodRefsCache = new WeakMap<object, Function>();
     const currentlyTracing = new WeakMap<object, Set<string>>();
@@ -195,11 +224,18 @@ export function createInstanceDecorator<T extends Record<string, unknown>>(
         const isFunction =
           typeof attributeValue === "function" && prop !== "constructor";
 
-        const shouldProxy = isFunction && !isClass(attributeValue);
-        // For Axios instance, do not proxy its methods
-        // its an exception case
-        const isAxios = attributeValue?.Axios;
-        if (!shouldProxy || isAxios) {
+        const shouldProxy =
+          isFunction &&
+          !isClass(attributeValue) &&
+          // A callable *object* - a Mongoose model, an Axios instance, an
+          // EventEmitter-backed client - is a field, not a method. The traced
+          // wrapper is a fresh bound function, so wrapping one silently drops
+          // everything hanging off it (`svc.model.find` became undefined
+          // mid-trace). This subsumes the Axios special case that used to sit
+          // here: an Axios instance is a bound `request` carrying its API as
+          // own properties.
+          !isCallableObject(attributeValue);
+        if (!shouldProxy) {
           return Reflect.get(target, prop);
         }
 
@@ -212,7 +248,13 @@ export function createInstanceDecorator<T extends Record<string, unknown>>(
           return methodRefsCache.get(attributeValue);
         }
 
-        const originalMethod = Reflect.get(target, prop, receiver);
+        // For a private-member class, `Reflect.get` with the proxy as receiver
+        // would already throw on an accessor that touches `this.#x`, so the
+        // value fetched against the target above is reused instead.
+        const originalMethod = hasPrivateMembers
+          ? attributeValue
+          : Reflect.get(target, prop, receiver);
+        const tracedReceiver = hasPrivateMembers ? target : receiver;
         const proxyFn = createTracedWrapper({
           className,
           methodName,
@@ -231,9 +273,11 @@ export function createInstanceDecorator<T extends Record<string, unknown>>(
             }
           },
           // Traced calls run against the proxy so that a method calling into
-          // itself (`this.other()`) is instrumented as a nested step.
+          // itself (`this.other()`) is instrumented as a nested step - except
+          // for private-member classes, whose brand checks only the raw
+          // instance satisfies.
           call: named(frameName, (_thisArg, args) =>
-            originalMethod.apply(receiver, args),
+            originalMethod.apply(tracedReceiver, args),
           ),
           callUntraced: named(frameName, (_thisArg, args) =>
             originalMethod.apply(target, args),
@@ -330,6 +374,82 @@ function escapeRegExp(value: string): string {
 
 function isClass(value: AnyFunction): boolean {
   return /^\s*class\s+/.test(value.toString());
+}
+
+/**
+ * The prototypes every ordinary function - plain, async, generator, async
+ * generator, arrow, bound - hangs off. Anything else above a callable means it
+ * was built by a library as an object that happens to be invocable.
+ */
+const INTRINSIC_FUNCTION_PROTOTYPES = new Set<object | null>([
+  Function.prototype,
+  Object.getPrototypeOf(async function () {}),
+  Object.getPrototypeOf(function* () {}),
+  Object.getPrototypeOf(async function* () {}),
+]);
+
+/**
+ * Whether a function is really an object with a call signature - a Mongoose
+ * model with its statics, a client with methods hung directly on it - rather
+ * than a method to be traced.
+ *
+ * Two tells, either sufficient: a prototype that is not one of the intrinsic
+ * function prototypes (Mongoose sets `M.__proto__ = Model`), or own enumerable
+ * properties, which a plain method never carries but statics are. The traced
+ * wrapper is a fresh function that preserves only `name` and reflect-metadata,
+ * so anything matching here must be handed out untouched.
+ */
+function isCallableObject(fn: AnyFunction): boolean {
+  return (
+    !INTRINSIC_FUNCTION_PROTOTYPES.has(Object.getPrototypeOf(fn)) ||
+    Object.keys(fn).length > 0
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+const privateMemberCache = new WeakMap<Function, boolean>();
+
+/**
+ * Whether any class in the instance's prototype chain declares native private
+ * members (`#field`, `#method()`).
+ *
+ * Detection reads the class source: private members can only be touched from
+ * inside the lexical class body, so a class whose text contains no `#name`
+ * token cannot perform a brand check. A `#` inside a string or comment can
+ * false-positive, which merely selects the raw-instance receiver - every call
+ * still works, only nested self-call spans are lost - so the cheap test is
+ * safe to lean on.
+ */
+function usesNativePrivateMembers(instance: object): boolean {
+  let proto: object | null = Object.getPrototypeOf(instance);
+  while (proto && proto !== Object.prototype) {
+    const ctor = proto.constructor;
+    if (typeof ctor === "function" && ctor !== Object) {
+      let hasPrivate = privateMemberCache.get(ctor);
+      if (hasPrivate === undefined) {
+        hasPrivate = declaresPrivateMembers(ctor);
+        privateMemberCache.set(ctor, hasPrivate);
+      }
+      if (hasPrivate) {
+        return true;
+      }
+    }
+    proto = Object.getPrototypeOf(proto);
+  }
+  return false;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+function declaresPrivateMembers(ctor: Function): boolean {
+  try {
+    // `#` starting a private name is never preceded by an identifier
+    // character; `obj.#x` and `#x in obj` and declarations all match.
+    return /(^|[^\w$])#[\w$]/.test(Function.prototype.toString.call(ctor));
+  } catch {
+    // A constructor whose source is unavailable (bound functions, some
+    // natives) cannot be a class body with private members.
+    return false;
+  }
 }
 
 function generateSpanId(instance: object, methodKey: string): string {

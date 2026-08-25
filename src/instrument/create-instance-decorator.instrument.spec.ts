@@ -260,6 +260,212 @@ describe("createInstanceDecorator", () => {
     });
   });
 
+  describe("when a field holds a callable object", () => {
+    /** Shaped like a compiled Mongoose model: callable, statics, custom proto. */
+    const makeModel = () => {
+      class BaseModel {}
+      function ProbeModel() {}
+      Object.setPrototypeOf(ProbeModel, BaseModel);
+      (ProbeModel as unknown as { find: () => string }).find = () => "found";
+      return ProbeModel as unknown as { find: () => string };
+    };
+
+    class Repository {
+      model = makeModel();
+
+      findAll() {
+        return this.model.find();
+      }
+    }
+
+    it("hands the callable out untouched, statics intact", () => {
+      const raw = new Repository();
+      const repo = decorate(raw) as Repository;
+
+      // A traced wrapper would be a fresh function with none of the statics -
+      // `svc.model.find` was undefined whenever a trace was active.
+      expect(withTrace(() => repo.model)).toBe(raw.model);
+      expect(withTrace(() => repo.model.find())).toEqual("found");
+    });
+
+    it("traces the method but not the model it calls through", () => {
+      const repo = decorate(new Repository()) as Repository;
+
+      const result = withTrace(() => repo.findAll());
+
+      expect(result).toEqual("found");
+      expect(startedSteps).toEqual([
+        { className: "Repository", methodName: "findAll" },
+      ]);
+    });
+
+    it("skips a plain function carrying own enumerable properties", () => {
+      const client = () => "call";
+      client.get = () => "static";
+      const raw = { client };
+      const wrapped = decorate(raw) as typeof raw;
+
+      expect(withTrace(() => wrapped.client)).toBe(client);
+      expect(withTrace(() => wrapped.client.get())).toEqual("static");
+    });
+
+    it("hands out an Axios-shaped instance untouched", () => {
+      // An Axios instance is `Axios.prototype.request` bound, with the API
+      // (`get`, `post`, `Axios`, ...) copied on as own properties. The
+      // structural check covers it - no special case needed.
+      // The bind is the point, not an accident: a real Axios instance is a
+      // bound function, and bound functions are shaped unlike plain ones (no
+      // `prototype` own property), so the structural check must see one.
+      function baseRequest() {
+        return "response";
+      }
+      const request = baseRequest.bind(undefined) as {
+        (): string;
+        get?: () => string;
+      };
+      Object.assign(request, { get: () => "got", Axios: class Axios {} });
+      const raw = { http: request as typeof request & { get: () => string } };
+      const wrapped = decorate(raw) as typeof raw;
+
+      expect(withTrace(() => wrapped.http)).toBe(raw.http);
+      expect(withTrace(() => wrapped.http.get())).toEqual("got");
+    });
+
+    it("still traces async methods despite their distinct prototype", () => {
+      class AsyncService {
+        async load() {
+          return "loaded";
+        }
+      }
+      const service = decorate(new AsyncService()) as AsyncService;
+
+      return withTrace(() => service.load()).then((result: string) => {
+        expect(result).toEqual("loaded");
+        // AsyncFunction.prototype is not Function.prototype; the callable-
+        // object check must not mistake ordinary async methods for fields.
+        expect(startedSteps).toEqual([
+          { className: "AsyncService", methodName: "load" },
+        ]);
+      });
+    });
+  });
+
+  describe("when the registry has no snapshot for the trace id", () => {
+    class HealthService {
+      check() {
+        return "ok";
+      }
+    }
+
+    let endCalls: number;
+    let noSnapshotDecorate: (instance: unknown) => unknown;
+
+    beforeEach(() => {
+      endCalls = 0;
+      // A request dropped by `http.ignore` or sampled out still carries its
+      // trace id in the store (log correlation reads it there), but the
+      // registry never opened a snapshot: internalStartTraceStep misses.
+      const registry = {
+        internalStartTraceStep: () => undefined,
+        internalEndTraceStep: () => {
+          endCalls += 1;
+        },
+      } as unknown as OperationTraceRegistry;
+      noSnapshotDecorate = createInstanceDecorator(als, registry, {
+        traceIdKey: TRACE_ID_KEY,
+        skipInstrumentation: () => false,
+      });
+    });
+
+    it("runs the method without trying to close a step that never opened", () => {
+      const service = noSnapshotDecorate(new HealthService()) as HealthService;
+
+      const result = withTrace(() => service.check());
+
+      expect(result).toEqual("ok");
+      // Closing anyway is what logged "No snapshot found for traceId" once
+      // per provider call - ~10 ERROR lines per readiness probe.
+      expect(endCalls).toBe(0);
+    });
+
+    it("clears the re-entrancy flag so later calls still run", () => {
+      const service = noSnapshotDecorate(new HealthService()) as HealthService;
+
+      withTrace(() => service.check());
+
+      expect(withTrace(() => service.check())).toEqual("ok");
+      expect(endCalls).toBe(0);
+    });
+  });
+
+  describe("when decorating a class with native private members", () => {
+    class SecretService {
+      #prefix = "secret";
+
+      reveal(name: string) {
+        return `${this.#prefix}:${name}`;
+      }
+
+      #transform(value: string) {
+        return value.toUpperCase();
+      }
+
+      shout(value: string) {
+        return this.#transform(this.reveal(value));
+      }
+    }
+
+    it("invokes methods that read private fields without throwing", () => {
+      // A proxy receiver fails the private-brand check ("Receiver must be an
+      // instance of class"), which surfaced as every exception-filter method
+      // blowing up. The raw instance must be the receiver here.
+      const service = decorate(new SecretService()) as SecretService;
+
+      const result = withTrace(() => service.reveal("a"));
+
+      expect(result).toEqual("secret:a");
+      expect(startedSteps).toEqual([
+        { className: "SecretService", methodName: "reveal" },
+      ]);
+      expect(endedSteps).toEqual([{ spanId: "SecretService#reveal" }]);
+    });
+
+    it("invokes private methods through public ones", () => {
+      const service = decorate(new SecretService()) as SecretService;
+
+      const result = withTrace(() => service.shout("a"));
+
+      expect(result).toEqual("SECRET:A");
+    });
+
+    it("detects private members declared on a base class", () => {
+      class ExtendedSecretService extends SecretService {
+        wrap(name: string) {
+          return `[${this.reveal(name)}]`;
+        }
+      }
+      const service = decorate(
+        new ExtendedSecretService(),
+      ) as ExtendedSecretService;
+
+      const result = withTrace(() => service.wrap("a"));
+
+      expect(result).toEqual("[secret:a]");
+    });
+
+    it("still records spans for methods on private-member classes", () => {
+      const service = decorate(new SecretService()) as SecretService;
+
+      withTrace(() => service.shout("a"));
+
+      // Nested `this.<method>()` spans are the documented trade-off - the
+      // call runs against the raw instance, so only the entry point is traced.
+      expect(startedSteps).toEqual([
+        { className: "SecretService", methodName: "shout" },
+      ]);
+    });
+  });
+
   describe("when decorating a standalone function", () => {
     function sendEmail(to: string) {
       return `sent:${to}`;

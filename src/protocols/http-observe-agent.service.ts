@@ -30,6 +30,15 @@ export class HttpObserveAgentService<Store extends Record<string, unknown>>
 {
   private httpAdapterInitSubscription: Subscription | undefined;
 
+  /**
+   * `http.queryParamsObfuscateRegex`, rebuilt with the global flag when it was
+   * supplied without one. It is applied with `replaceAll`, which throws on a
+   * non-global RegExp - inside the request hook, so every traced request would
+   * answer 500 while ignored routes (health checks) kept passing. Same
+   * normalisation `RedactionOptions.patterns` already receives.
+   */
+  private readonly queryParamsObfuscateRegex: RegExp | undefined;
+
   constructor(
     private readonly httpAdapterHost: HttpAdapterHost,
     private readonly asyncLocalStorage: AsyncLocalStorage<
@@ -41,6 +50,10 @@ export class HttpObserveAgentService<Store extends Record<string, unknown>>
     private readonly observeAgentSharedBuffer: ObserveAgentSharedBuffer,
     private readonly traceSamplerService: TraceSamplerService,
   ) {
+    this.queryParamsObfuscateRegex = toGlobalRegExp(
+      this.options.http?.queryParamsObfuscateRegex,
+    );
+
     // The "setOnRouteTriggered" hook must be set immediately
     // to ensure that route metadata is captured correctly.
     const { httpAdapter } = this.httpAdapterHost;
@@ -151,11 +164,8 @@ export class HttpObserveAgentService<Store extends Record<string, unknown>>
       // than instead - it exists for the keys only that deployment knows
       // about.
       const redactedUrl = redactUrlQuery(req.url);
-      const originalUrl = this.options.http?.queryParamsObfuscateRegex
-        ? redactedUrl.replaceAll(
-            this.options.http.queryParamsObfuscateRegex,
-            "[REDACTED]",
-          )
+      const originalUrl = this.queryParamsObfuscateRegex
+        ? redactedUrl.replaceAll(this.queryParamsObfuscateRegex, "[REDACTED]")
         : redactedUrl;
 
       this.operationTraceRegistry.startTrace(traceId, {
@@ -266,4 +276,15 @@ export class HttpObserveAgentService<Store extends Record<string, unknown>>
     }
     return false;
   }
+}
+
+/**
+ * Rebuilds a RegExp with the global flag when it lacks one, keeping the
+ * original otherwise. `replaceAll` refuses a non-global pattern outright.
+ */
+function toGlobalRegExp(pattern: RegExp | undefined): RegExp | undefined {
+  if (!pattern || pattern.global) {
+    return pattern;
+  }
+  return new RegExp(pattern.source, pattern.flags + "g");
 }

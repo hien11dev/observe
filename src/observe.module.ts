@@ -54,6 +54,7 @@ export function createObserveModule<Store extends Record<string, unknown>>(
   options.traceIdKey ??= "traceId";
   options.attachTraceIdToLogs ??= true;
   options.traceIdGenerator ??= defaultTraceIdGenerator;
+  options.skipInstrumentation ??= () => false;
 
   const asyncLocalStorage = new AsyncLocalStorage<Map<KeyOf<Store>, unknown>>();
   const operationTraceRegistry = new OperationTraceRegistry(
@@ -195,44 +196,66 @@ export function createObserveModule<Store extends Record<string, unknown>>(
     }
   }
 
+  const skipInstrumentation = (instance: unknown): boolean => {
+    try {
+      return (
+        // The user hook runs first so it can exclude providers whose mere
+        // inspection throws before the structural checks below ever touch
+        // them.
+        options.skipInstrumentation!(instance) ||
+        [asyncLocalStorage, operationTraceRegistry].includes(
+          instance as AsyncLocalStorage<any> | OperationTraceRegistry,
+        ) ||
+        instance instanceof TraceSamplerService ||
+        instance instanceof TracerService ||
+        instance instanceof ObserveAgentSharedBuffer ||
+        // Its methods run *inside* the traces it opens, so instrumenting it
+        // would put a span for the agent itself at the root of every GraphQL
+        // operation it records.
+        instance instanceof GraphQLObserveAgentService ||
+        // Same reason: its wrapper runs inside the job traces it opens.
+        instance instanceof ScheduleObserveAgentService ||
+        // Nest's discovery machinery, which the GraphQL agent walks to map
+        // root fields back to their resolver classes. It has to stay
+        // unproxied: ModulesContainer extends Map, and a Map method invoked
+        // with the instrumentation proxy as its receiver throws "called on
+        // incompatible receiver" - Map's internal slots live on the target,
+        // and a proxy does not forward them.
+        instance instanceof ModulesContainer ||
+        instance instanceof DiscoveryService ||
+        instance instanceof MetadataScanner ||
+        // `@nestjs/graphql`'s ResolverDecoratorHost, matched structurally
+        // because the package is an optional peer. Its `onRequestStart` /
+        // `onRequestEnd` methods invoke the hooks this module registers, so
+        // instrumenting it would wrap the agent's own bookkeeping in spans
+        // inside every operation it measures.
+        isResolverDecoratorHost(instance)
+      );
+    } catch {
+      // An instance that throws on inspection - `instanceof` runs its
+      // prototype trap, `isResolverDecoratorHost` reads properties - cannot
+      // be instrumented either way. nestjs-cls proxy providers are the
+      // canonical case: any access outside a CLS context throws
+      // ProxyProviderNotResolvedException, and instrumentation runs at
+      // bootstrap, where no such context exists. Leaving the provider alone
+      // is the only answer that lets the app start.
+      return true;
+    }
+  };
+
   return {
     ObserveInstrument: {
+      // Exclusions live entirely in the decorator: the framework's contract
+      // is `instanceDecorator` alone (nestjs/nest#17559 dropped a separate
+      // skip hook to avoid duplicating APIs). Newer cores additionally wrap
+      // this in a safety net that falls back to the undecorated instance,
+      // with a warning, should it ever throw.
       instanceDecorator: createInstanceDecorator<Store>(
         asyncLocalStorage,
         operationTraceRegistry,
         {
           traceIdKey: options.traceIdKey,
-          skipInstrumentation: (instance) => {
-            return (
-              [asyncLocalStorage, operationTraceRegistry].includes(
-                instance as AsyncLocalStorage<any> | OperationTraceRegistry,
-              ) ||
-              instance instanceof TraceSamplerService ||
-              instance instanceof TracerService ||
-              instance instanceof ObserveAgentSharedBuffer ||
-              // Its methods run *inside* the traces it opens, so instrumenting
-              // it would put a span for the agent itself at the root of every
-              // GraphQL operation it records.
-              instance instanceof GraphQLObserveAgentService ||
-              // Same reason: its wrapper runs inside the job traces it opens.
-              instance instanceof ScheduleObserveAgentService ||
-              // Nest's discovery machinery, which the GraphQL agent walks to
-              // map root fields back to their resolver classes. It has to stay
-              // unproxied: ModulesContainer extends Map, and a Map method
-              // invoked with the instrumentation proxy as its receiver throws
-              // "called on incompatible receiver" - Map's internal slots live
-              // on the target, and a proxy does not forward them.
-              instance instanceof ModulesContainer ||
-              instance instanceof DiscoveryService ||
-              instance instanceof MetadataScanner ||
-              // `@nestjs/graphql`'s ResolverDecoratorHost, matched structurally
-              // because the package is an optional peer. Its `onRequestStart` /
-              // `onRequestEnd` methods invoke the hooks this module registers,
-              // so instrumenting it would wrap the agent's own bookkeeping in
-              // spans inside every operation it measures.
-              isResolverDecoratorHost(instance)
-            );
-          },
+          skipInstrumentation,
         },
       ),
     } as NestApplicationOptions["instrument"],

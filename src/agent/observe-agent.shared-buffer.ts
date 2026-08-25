@@ -192,6 +192,22 @@ export class ObserveAgentSharedBuffer {
   ) {}
 
   insertRequestSnapshot(snapshot: RequestSnapshot) {
+    // A request can end before its route metadata is ever captured - an auth
+    // guard rejecting it, or a GraphQL document that never reaches a resolver
+    // (`{ __typename }`) - leaving no operation id. The collector requires one
+    // on every snapshot and rejects the *entire batch* over a single miss, so
+    // fall back to the transport's URL, and drop the snapshot when even that
+    // is absent rather than poison the batch it would ride in.
+    snapshot.operationId ??= snapshot.attributes?.originalUrl;
+    if (!snapshot.operationId) {
+      if (this.options.debug) {
+        this.logger.debug(
+          `Snapshot for traceId "${snapshot.traceId}" has no operation id nor URL to fall back on. Ignoring snapshot.`,
+        );
+      }
+      return;
+    }
+
     if (!this._mainThreadBuffer) {
       this._mainThreadBuffer = this.createEmptyPayload();
     }

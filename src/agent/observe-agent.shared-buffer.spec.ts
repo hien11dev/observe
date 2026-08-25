@@ -205,6 +205,64 @@ describe("ObserveAgentSharedBuffer", () => {
     });
   });
 
+  describe("request snapshot operation id", () => {
+    const requestSnapshot = (overrides: Record<string, unknown> = {}) =>
+      ({
+        traceId: "trace-1",
+        protocol: "http",
+        traces: [],
+        ...overrides,
+      }) as never;
+
+    const snapshotsOf = (buffer: ObserveAgentSharedBuffer) =>
+      (batchOf(buffer) as { snapshots?: Array<{ op?: string; ou?: string }> })
+        ?.snapshots;
+
+    it("keeps the operation id when one was captured", () => {
+      const buffer = createBuffer();
+
+      buffer.insertRequestSnapshot(
+        requestSnapshot({
+          operationId: "/users/:id",
+          attributes: { originalUrl: "/users/42" },
+        }),
+      );
+
+      expect(snapshotsOf(buffer)).toEqual([
+        expect.objectContaining({ op: "/users/:id" }),
+      ]);
+    });
+
+    it("falls back to the request URL when no route was resolved", () => {
+      const buffer = createBuffer();
+
+      // A guard rejecting the request, or a GraphQL document that never
+      // reaches a resolver, ends the trace before route metadata exists.
+      buffer.insertRequestSnapshot(
+        requestSnapshot({ attributes: { originalUrl: "/graphql" } }),
+      );
+
+      expect(snapshotsOf(buffer)).toEqual([
+        expect.objectContaining({ op: "/graphql" }),
+      ]);
+    });
+
+    it("drops a snapshot with neither, keeping the batch shippable", () => {
+      const buffer = createBuffer();
+      buffer.insertRequestSnapshot(
+        requestSnapshot({ operationId: "/healthy" }),
+      );
+
+      // The collector rejects a whole batch over one snapshot missing its
+      // operation id, so the unlabelable snapshot must never ride along.
+      buffer.insertRequestSnapshot(requestSnapshot({ traceId: "trace-2" }));
+
+      expect(snapshotsOf(buffer)).toEqual([
+        expect.objectContaining({ op: "/healthy" }),
+      ]);
+    });
+  });
+
   describe("job snapshot cap", () => {
     it("caps job snapshots at maxTracesPerBatch, same as request snapshots", () => {
       const buffer = createBuffer({ maxTracesPerBatch: 3 });

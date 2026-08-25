@@ -7,6 +7,86 @@ import { createObserveModule } from "./observe.module.js";
 import { OBSERVE_OPTIONS } from "./observe.constants.js";
 
 /**
+ * The instance decorator handed to NestFactory. Bootstrap passes *every*
+ * provider through it, including ones this module knows nothing about, so the
+ * cases here are about surviving hostile instances rather than tracing.
+ */
+describe("createObserveModule#ObserveInstrument", () => {
+  const decoratorOf = (instrument: unknown): ((instance: unknown) => unknown) =>
+    (instrument as { instanceDecorator: (instance: unknown) => unknown })
+      .instanceDecorator;
+
+  /**
+   * Shaped like a nestjs-cls proxy provider: every trap throws when touched
+   * outside a CLS context - and bootstrap is always outside one.
+   */
+  const throwingProxyProvider = () =>
+    new Proxy(
+      {},
+      {
+        get: () => {
+          throw new Error(
+            "Cannot access the property on the Proxy provider because the value does not exist in the CLS.",
+          );
+        },
+        getPrototypeOf: () => {
+          throw new Error(
+            "Cannot access the prototype of the Proxy provider because the value does not exist in the CLS.",
+          );
+        },
+      },
+    );
+
+  it("leaves a provider whose inspection throws untouched", () => {
+    const { ObserveInstrument } = createObserveModule();
+    const provider = throwingProxyProvider();
+
+    // Reading `decorate` (the structural ResolverDecoratorHost check) or the
+    // prototype (`instanceof`) on this provider throws; bootstrap must not.
+    expect(decoratorOf(ObserveInstrument)(provider)).toBe(provider);
+  });
+
+  it("excludes providers via the skipInstrumentation option", () => {
+    class OptedOutService {
+      run() {}
+    }
+    const { ObserveInstrument } = createObserveModule({
+      skipInstrumentation: (instance) => instance instanceof OptedOutService,
+    });
+    const decorate = decoratorOf(ObserveInstrument);
+    const optedOut = new OptedOutService();
+    const other = { run() {} };
+
+    expect(decorate(optedOut)).toBe(optedOut);
+    // The hook only excludes what it matches - everything else still gets its
+    // instrumentation proxy.
+    expect(decorate(other)).not.toBe(other);
+  });
+
+  it("carries no extra properties besides the decorator", () => {
+    // `instanceDecorator` is the framework's whole contract
+    // (nestjs/nest#17559 dropped a separate skip hook to avoid duplicating
+    // APIs) - exclusions are the decorator's own business.
+    const { ObserveInstrument } = createObserveModule();
+
+    expect(Object.keys(ObserveInstrument as object)).toEqual([
+      "instanceDecorator",
+    ]);
+  });
+
+  it("treats a skipInstrumentation hook that throws as an exclusion", () => {
+    const { ObserveInstrument } = createObserveModule({
+      skipInstrumentation: () => {
+        throw new Error("user hook exploded");
+      },
+    });
+    const instance = { run() {} };
+
+    expect(decoratorOf(ObserveInstrument)(instance)).toBe(instance);
+  });
+});
+
+/**
  * The `forRootAsync` wiring, which has three mutually exclusive shapes and one
  * invalid one. The providers are built by plain static methods, so these assert
  * on what those return rather than booting an application - the protocol
