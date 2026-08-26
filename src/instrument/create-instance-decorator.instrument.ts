@@ -205,15 +205,37 @@ export function createInstanceDecorator<T extends Record<string, unknown>>(
     // Such classes get the raw instance as receiver instead - trading away
     // nested `this.other()` spans (those calls no longer pass through the
     // proxy) for methods that run at all.
+    //
+    // Built-ins backed by internal slots (`Map`, `Set`, `Date`, ...) hit the
+    // same wall for the same reason: `Map.prototype.has` reads `[[MapData]]`
+    // off its receiver, internal slots never forward through a proxy, so the
+    // call throws "called on incompatible receiver" (nestjs/nest#17569).
     let hasPrivateMembers: boolean;
+    let slotBacked: boolean;
+    let bareBuiltIn: boolean;
     try {
       hasPrivateMembers = usesNativePrivateMembers(instance);
+      slotBacked = isSlotBackedBuiltIn(instance);
+      bareBuiltIn = slotBacked && isNativeFunction(instance.constructor);
     } catch {
       // Reading the prototype ran a trap that threw (nestjs-cls proxy
       // providers do this outside a CLS context). An instance that cannot be
       // inspected cannot be instrumented; hand it back untouched.
       return instance;
     }
+
+    // A bare built-in registered as a provider (`useValue: new Map()`) has no
+    // user code to trace - every method on it is native, and each one would
+    // throw through the proxy. Hand it back untouched. A user *subclass* of a
+    // built-in still carries methods worth tracing, so it falls through to the
+    // raw-receiver path below instead.
+    if (bareBuiltIn) {
+      return instance;
+    }
+
+    // Slot-backed subclasses share the private-member trade-off: methods run
+    // against the raw instance so the natives they inherit keep working.
+    const requiresRawReceiver = hasPrivateMembers || slotBacked;
 
     // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     const methodRefsCache = new WeakMap<object, Function>();
@@ -251,10 +273,10 @@ export function createInstanceDecorator<T extends Record<string, unknown>>(
         // For a private-member class, `Reflect.get` with the proxy as receiver
         // would already throw on an accessor that touches `this.#x`, so the
         // value fetched against the target above is reused instead.
-        const originalMethod = hasPrivateMembers
+        const originalMethod = requiresRawReceiver
           ? attributeValue
           : Reflect.get(target, prop, receiver);
-        const tracedReceiver = hasPrivateMembers ? target : receiver;
+        const tracedReceiver = requiresRawReceiver ? target : receiver;
         const proxyFn = createTracedWrapper({
           className,
           methodName,
@@ -404,6 +426,72 @@ function isCallableObject(fn: AnyFunction): boolean {
     !INTRINSIC_FUNCTION_PROTOTYPES.has(Object.getPrototypeOf(fn)) ||
     Object.keys(fn).length > 0
   );
+}
+
+/**
+ * Prototypes of the built-ins whose methods read internal slots
+ * (`[[MapData]]`, `[[SetData]]`, `[[DateValue]]`, ...) off their receiver.
+ * Internal slots live on the target and never forward through a proxy, so any
+ * such method invoked with the instrumentation proxy as receiver throws
+ * "called on incompatible receiver".
+ *
+ * `%TypedArray%.prototype` (reached via `Uint8Array`'s parent) covers every
+ * typed array - and, through it, Node's `Buffer`. `Array` is deliberately
+ * absent: its methods are generic and proxy-safe.
+ */
+const SLOT_BACKED_PROTOTYPES = new Set<object>([
+  Map.prototype,
+  Set.prototype,
+  WeakMap.prototype,
+  WeakSet.prototype,
+  Date.prototype,
+  RegExp.prototype,
+  Promise.prototype,
+  ArrayBuffer.prototype,
+  ...(typeof SharedArrayBuffer === "undefined"
+    ? []
+    : [SharedArrayBuffer.prototype]),
+  DataView.prototype,
+  WeakRef.prototype,
+  FinalizationRegistry.prototype,
+  Object.getPrototypeOf(Uint8Array.prototype) as object,
+]);
+
+/**
+ * Whether the instance's prototype chain passes through a slot-backed
+ * built-in, meaning its (inherited) native methods would throw if invoked with
+ * a proxy as their receiver.
+ */
+function isSlotBackedBuiltIn(instance: object): boolean {
+  let proto: object | null = Object.getPrototypeOf(instance);
+  while (proto) {
+    if (SLOT_BACKED_PROTOTYPES.has(proto)) {
+      return true;
+    }
+    proto = Object.getPrototypeOf(proto);
+  }
+  return false;
+}
+
+/**
+ * Whether a constructor is engine- or platform-provided rather than user
+ * code. A slot-backed instance whose entire chain is native (`new Map()`,
+ * `Buffer.from(...)`) carries nothing to trace; one with a user constructor on
+ * top (`class Cache extends Map`) does.
+ */
+function isNativeFunction(fn: unknown): boolean {
+  if (typeof fn !== "function") {
+    // No constructor at all (`Object.create(Map.prototype)`): nothing
+    // user-defined to trace either.
+    return true;
+  }
+  try {
+    return /\{\s*\[native code\]\s*\}$/.test(
+      Function.prototype.toString.call(fn),
+    );
+  } catch {
+    return true;
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

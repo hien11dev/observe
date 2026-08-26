@@ -466,6 +466,66 @@ describe("createInstanceDecorator", () => {
     });
   });
 
+  describe("when decorating a slot-backed built-in", () => {
+    it("returns a bare Map untouched", () => {
+      // `Map.prototype.has` reads `[[MapData]]` off its receiver and internal
+      // slots never forward through a proxy, so a wrapped bare Map threw
+      // "called on incompatible receiver" on its first use (nestjs/nest#17569).
+      const cache = new Map<string, string>([["a", "1"]]);
+
+      const decorated = decorate(cache) as Map<string, string>;
+
+      expect(decorated).toBe(cache);
+      expect(withTrace(() => decorated.has("a"))).toEqual(true);
+      expect(startedSteps).toEqual([]);
+    });
+
+    it("returns other bare built-ins untouched", () => {
+      const set = new Set(["a"]);
+      const date = new Date(0);
+      const regexp = /a/;
+
+      expect(decorate(set)).toBe(set);
+      expect(decorate(date)).toBe(date);
+      expect(decorate(regexp)).toBe(regexp);
+      expect(
+        withTrace(() => [set.has("a"), date.getTime(), regexp.test("a")]),
+      ).toEqual([true, 0, true]);
+    });
+
+    it("invokes native methods inherited by a subclass without throwing", () => {
+      class TenantCache extends Map<string, string> {
+        lookup(id: string) {
+          return this.has(id) ? this.get(id) : "missing";
+        }
+      }
+      const cache = decorate(new TenantCache()) as TenantCache;
+      cache.set("a", "1");
+
+      const result = withTrace(() => cache.lookup("a"));
+
+      expect(result).toEqual("1");
+    });
+
+    it("still records spans for user methods on a built-in subclass", () => {
+      class TenantCache extends Map<string, string> {
+        lookup(id: string) {
+          return this.has(id);
+        }
+      }
+      const cache = decorate(new TenantCache()) as TenantCache;
+
+      withTrace(() => cache.lookup("a"));
+
+      // Like private-member classes, calls run against the raw instance so
+      // the inherited natives keep their internal slots - only the entry
+      // point is traced, nested self-calls are the documented trade-off.
+      expect(startedSteps).toEqual([
+        { className: "TenantCache", methodName: "lookup" },
+      ]);
+    });
+  });
+
   describe("when decorating a standalone function", () => {
     function sendEmail(to: string) {
       return `sent:${to}`;
