@@ -94,24 +94,41 @@ export class ScheduleObserveAgentService<
    * wrapped every handler.
    */
   private loadScheduleExplorer(): ScheduleExplorerLike | undefined {
-    const result = loadOptionalPeer<{
-      ScheduleExplorer?: ScheduleExplorerLike;
-    }>("@nestjs/schedule", "@nestjs/schedule/dist/schedule.explorer.js");
-    if (!result.installed) {
+    type ExplorerModule = { ScheduleExplorer?: ScheduleExplorerLike };
+
+    // The entry point is the supported source, but it only re-exports the
+    // explorer from 12.0.1 onwards; every earlier version keeps it behind a
+    // deep path. Try the public export first, then the file, so a supported
+    // import is preferred wherever one exists.
+    const entryPoint = loadOptionalPeer<ExplorerModule>("@nestjs/schedule");
+    if (!entryPoint.installed) {
       // Nothing scheduled, nothing to patch, and that is not a
       // misconfiguration.
       return undefined;
     }
-    if (result.error) {
-      // Installed but the explorer cannot be loaded - a version that moved
-      // the file, say. Worth saying out loud, with the actual cause: the
-      // symptom otherwise is a service whose jobs silently never appear.
-      this.logger.warn(
-        `@nestjs/schedule is installed but its ScheduleExplorer could not be loaded, so scheduled jobs will not be instrumented: ${describePeerLoadError(result.error)}`,
-      );
-      return undefined;
+    if (entryPoint.module?.ScheduleExplorer) {
+      return entryPoint.module.ScheduleExplorer;
     }
-    return result.module?.ScheduleExplorer;
+
+    const deepPath = loadOptionalPeer<ExplorerModule>(
+      "@nestjs/schedule",
+      "@nestjs/schedule/dist/schedule.explorer.js",
+    );
+    if (deepPath.installed && deepPath.module?.ScheduleExplorer) {
+      return deepPath.module.ScheduleExplorer;
+    }
+
+    // Installed, but the explorer is in neither place - a version that moved
+    // it, say. Worth saying out loud, with whichever cause was recorded: the
+    // symptom otherwise is a service whose jobs silently never appear.
+    const cause =
+      (deepPath.installed && deepPath.error) ||
+      entryPoint.error ||
+      new Error("ScheduleExplorer is not exported by @nestjs/schedule");
+    this.logger.warn(
+      `@nestjs/schedule is installed but its ScheduleExplorer could not be loaded, so scheduled jobs will not be instrumented: ${describePeerLoadError(cause)}`,
+    );
+    return undefined;
   }
 
   private patchScheduleExplorer(): void {

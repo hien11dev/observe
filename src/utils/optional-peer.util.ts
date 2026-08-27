@@ -1,4 +1,5 @@
 import { createRequire } from "module";
+import { dirname, join } from "path";
 
 /**
  * What loading an optional peer produced.
@@ -29,6 +30,12 @@ export type OptionalPeerResult<T> =
  * say - is treated as "not installed": with no resolver there is nothing to
  * load, and crashing the constructor would defeat the point of the peer being
  * optional.
+ *
+ * A deep specifier that an `exports` map refuses (Nest v12 added one to
+ * several packages) is retried as an absolute path built from the package's
+ * own `package.json` - always exported, and an absolute path is not subject
+ * to the map. The file still has to be there, so a genuinely moved or removed
+ * entry keeps reporting its own failure.
  */
 /** Names a load failure for a log line: the message for an `Error`, `String` otherwise. */
 export function describePeerLoadError(error: unknown): string {
@@ -49,6 +56,42 @@ export function loadOptionalPeer<T>(
   try {
     return { installed: true, module: require(specifier) as T };
   } catch (error) {
+    const withinPackage = resolveWithinPackage(
+      require,
+      packageName,
+      specifier,
+    );
+    if (withinPackage) {
+      try {
+        return { installed: true, module: require(withinPackage) as T };
+      } catch {
+        // Fall through and report the original failure: it names the
+        // specifier the caller actually asked for.
+      }
+    }
     return { installed: true, module: undefined, error };
+  }
+}
+
+/**
+ * Turns a deep specifier such as `@nestjs/schedule/dist/schedule.explorer.js`
+ * into an absolute path inside the installed package, so an `exports` map
+ * that hides the subpath is bypassed. Returns `undefined` when the specifier
+ * is not a subpath of `packageName` or the package cannot be located.
+ */
+function resolveWithinPackage(
+  require: ReturnType<typeof createRequire>,
+  packageName: string,
+  specifier: string,
+): string | undefined {
+  const prefix = `${packageName}/`;
+  if (!specifier.startsWith(prefix)) {
+    return undefined;
+  }
+  try {
+    const manifest = require.resolve(`${packageName}/package.json`);
+    return join(dirname(manifest), specifier.slice(prefix.length));
+  } catch {
+    return undefined;
   }
 }

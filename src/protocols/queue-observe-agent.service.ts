@@ -93,16 +93,13 @@ export class QueueObserveAgentService<Store extends Record<string, unknown>> {
     | undefined {
     const result = loadOptionalPeer<{
       ProcessorDecoratorService?: ProcessorDecoratorServiceLike;
-    }>(
-      "@nestjs/bullmq",
-      "@nestjs/bullmq/dist/instrument/processor-decorator.service.js",
-    );
+    }>("@nestjs/bullmq");
     if (!result.installed) {
       return undefined;
     }
     if (result.error) {
-      // The real cause - a version that moved the file, an exports map that
-      // hides it - so the "update to the latest version" advice below is
+      // The real cause - a version that no longer re-exports it, a broken
+      // install - so the "update to the latest version" advice below is
       // never the only diagnostic.
       this.logger.warn(
         `@nestjs/bullmq is installed but its processor decorator could not be loaded: ${describePeerLoadError(result.error)}`,

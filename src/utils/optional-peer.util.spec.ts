@@ -16,6 +16,20 @@ describe("loadOptionalPeer", () => {
     );
   });
 
+  it("loads a subpath an exports map hides", () => {
+    // @nestjs/schedule ships an exports map that refuses this subpath, and
+    // does not re-export the explorer from its entry point.
+    const result = loadOptionalPeer<{ ScheduleExplorer?: unknown }>(
+      "@nestjs/schedule",
+      "@nestjs/schedule/dist/schedule.explorer.js",
+    );
+
+    expect(result.installed).toBe(true);
+    expect(result.installed && result.module?.ScheduleExplorer).toEqual(
+      expect.any(Function),
+    );
+  });
+
   it("keeps 'installed but unloadable' apart from 'not installed'", () => {
     const result = loadOptionalPeer(
       "rxjs",

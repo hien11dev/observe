@@ -1,4 +1,4 @@
-import { ProcessorDecoratorService } from "@nestjs/bullmq/dist/instrument/processor-decorator.service.js";
+import { ProcessorDecoratorService } from "@nestjs/bullmq";
 import { AsyncLocalStorage } from "async_hooks";
 import { QueueObserveAgentService } from "./queue-observe-agent.service.js";
 
