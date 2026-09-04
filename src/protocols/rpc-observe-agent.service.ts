@@ -24,6 +24,7 @@ import {
   extractPropagation,
   getOpenTelemetryResourceAttributes,
   OTEL_BAGGAGE_KEY,
+  OTEL_PARENT_SPAN_ID_KEY,
   OTEL_TRACE_FLAGS_KEY,
   toBaggageTags,
 } from "../utils/opentelemetry.util.js";
@@ -172,6 +173,10 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
           OTEL_TRACE_FLAGS_KEY,
           propagation.traceparent.traceFlags,
         );
+        (store as Map<string, unknown>).set(
+          OTEL_PARENT_SPAN_ID_KEY,
+          propagation.traceparent.parentSpanId,
+        );
       }
       if (propagation.baggage) {
         (store as Map<string, unknown>).set(OTEL_BAGGAGE_KEY, propagation.baggage);
@@ -231,6 +236,10 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
         (store as Map<string, unknown>).set(
           OTEL_TRACE_FLAGS_KEY,
           propagation.traceparent.traceFlags,
+        );
+        (store as Map<string, unknown>).set(
+          OTEL_PARENT_SPAN_ID_KEY,
+          propagation.traceparent.parentSpanId,
         );
       }
       if (propagation.baggage) {

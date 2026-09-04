@@ -205,6 +205,39 @@ describe("StdoutForwarderService", () => {
         "severity.number": 13,
       });
     });
+
+    it("keeps generated OTel fields canonical and preserves conflicting source values separately", () => {
+      const service = build({
+        serviceId: "svc-1",
+        serviceName: "orders-api",
+      });
+
+      write(
+        service,
+        `${JSON.stringify({
+          level: "info",
+          message: "structured",
+          attributes: {
+            ignored: true,
+          },
+          "service.name": "source-service",
+          "severity.text": "CUSTOM",
+          "severity.number": 99,
+          "log.iostream": "stderr",
+        })}\n`,
+      );
+
+      expect(buffer.entries[0].attributes).toMatchObject({
+        "service.name": "orders-api",
+        "severity.text": "INFO",
+        "severity.number": 9,
+        "log.iostream": "stdout",
+        "log.source.service.name": "source-service",
+        "log.source.severity.text": "CUSTOM",
+        "log.source.severity.number": 99,
+        "log.source.log.iostream": "stderr",
+      });
+    });
   });
 
   describe("trace attribution", () => {

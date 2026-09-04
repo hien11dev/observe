@@ -12,6 +12,7 @@ import {
   baggageToHeader,
   formatTraceparent,
   OTEL_BAGGAGE_KEY,
+  OTEL_PARENT_SPAN_ID_KEY,
   OTEL_TRACE_FLAGS_KEY,
 } from "../utils/opentelemetry.util.js";
 import { OperationTraceRegistry } from "./operation-trace.registry.js";
@@ -343,6 +344,8 @@ export class TracerService<
     const spanId =
       typeof store?.get(CALLER_METADATA_KEY) === "string"
         ? (store.get(CALLER_METADATA_KEY) as string)
+        : typeof store?.get(OTEL_PARENT_SPAN_ID_KEY) === "string"
+          ? (store.get(OTEL_PARENT_SPAN_ID_KEY) as string)
         : undefined;
     const traceFlags =
       typeof store?.get(OTEL_TRACE_FLAGS_KEY) === "string"

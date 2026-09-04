@@ -1,7 +1,10 @@
 import { AsyncLocalStorage } from "async_hooks";
 import { ObserveAgentSharedBuffer } from "../agent/observe-agent.shared-buffer.js";
 import { CustomMetric } from "../interfaces/index.js";
-import { OTEL_BAGGAGE_KEY } from "../utils/opentelemetry.util.js";
+import {
+  OTEL_BAGGAGE_KEY,
+  OTEL_PARENT_SPAN_ID_KEY,
+} from "../utils/opentelemetry.util.js";
 import { ObserveModuleOptionsWithDefaults } from "../interfaces/observe-options.interface.js";
 import { CALLER_METADATA_KEY } from "../observe.constants.js";
 import { OperationTraceRegistry } from "./operation-trace.registry.js";
@@ -178,6 +181,20 @@ describe("TracerService", () => {
 
     it("returns an empty object outside a trace", () => {
       expect(tracer.currentPropagationHeaders()).toEqual({});
+    });
+
+    it("falls back to the inbound parent span id before a local span is active", () => {
+      const headers = als.run(
+        new Map<string, unknown>([
+          [TRACE_ID_KEY, "123e4567-e89b-12d3-a456-426614174000"],
+          [OTEL_PARENT_SPAN_ID_KEY, "00f067aa0ba902b7"],
+        ]),
+        () => tracer.currentPropagationHeaders(),
+      );
+
+      expect(headers.traceparent).toBe(
+        "00-123e4567e89b12d3a456426614174000-00f067aa0ba902b7-01",
+      );
     });
   });
 

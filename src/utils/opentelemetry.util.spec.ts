@@ -34,21 +34,25 @@ describe("OpenTelemetry helpers", () => {
     it("falls back to an unsampled flag when the stored one is invalid", () => {
       expect(
         formatTraceparent(
-          "123e4567-e89b-12d3-a456-426614174000",
-          "123e4567-e89b-12d3-a456-426614174999",
+          "123e4567-e89b-a2d3-a456-426614174000",
+          "a456426614174999",
           "zz",
         ),
       ).toBe(
-        "00-123e4567e89b12d3a456426614174000-a456426614174999-00",
+        "00-123e4567e89ba2d3a456426614174000-a456426614174999-00",
       );
     });
 
-    it("drops UUID-derived parent ids that normalize to all zeros", () => {
+    it("rejects UUID span ids instead of deriving a parent id from them", () => {
       expect(
         normalizeSpanIdForTraceparent(
-          "123e4567-e89b-12d3-0000-000000000000",
+          "123e4567-e89b-12d3-a456-426614174999",
         ),
       ).toBeUndefined();
+    });
+
+    it("drops plain all-zero span ids", () => {
+      expect(normalizeSpanIdForTraceparent("0000000000000000")).toBeUndefined();
     });
   });
 
@@ -57,6 +61,13 @@ describe("OpenTelemetry helpers", () => {
       expect(parseBaggage("tenant=acme,user=alice%40example.com")).toEqual({
         tenant: "acme",
         user: "alice@example.com",
+      });
+    });
+
+    it("keeps baggage members whose value is intentionally empty", () => {
+      expect(parseBaggage("tenant=,user=alice")).toEqual({
+        tenant: "",
+        user: "alice",
       });
     });
 

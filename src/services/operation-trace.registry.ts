@@ -1,7 +1,7 @@
 import { IntrinsicException, Logger, RequestMethod } from "@nestjs/common";
 import { AsyncLocalStorage } from "async_hooks";
 import { activeSliceRecorder } from "../profiling/span-slice-recorder.js";
-import { randomUUID } from "crypto";
+import { randomBytes } from "crypto";
 import { JobSnapshot } from "../interfaces/index.js";
 import { RequestSnapshot } from "../interfaces/request-snapshot.interface.js";
 import { CreateObserveModuleOptions } from "../interfaces/observe-options.interface.js";
@@ -335,7 +335,7 @@ export class OperationTraceRegistry {
     }
     snapshot.refsCounter += 1;
 
-    const newNodeId = randomUUID();
+    const newNodeId = generateSpanId();
     const startTime = performance.now();
 
     // Records which span owns the thread from here. A no-op unless continuous
@@ -690,7 +690,7 @@ export class OperationTraceRegistry {
     // reference, and JSON.stringify threw away the whole flush window.
     snapshot.refsCounter += 1;
 
-    const newNodeId = randomUUID();
+    const newNodeId = generateSpanId();
     const startTime = performance.now();
 
     // Same as internalStartTraceStep: without an enter, the exit issued on
@@ -777,4 +777,8 @@ export class OperationTraceRegistry {
     }
     target.tags[key] = value;
   }
+}
+
+function generateSpanId(): string {
+  return randomBytes(8).toString("hex");
 }

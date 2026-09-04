@@ -166,6 +166,9 @@ When `forwardLogs` is enabled, structured JSON logs that already carry
 are preserved and correlated as-is where possible, which makes them easier to
 query in OpenObserve-style log pipelines while staying compatible with the
 existing Observe collector payload.
+If a source log already sets keys such as `service.name` or `severity.text`,
+Observe keeps its process-level canonical values under those keys and retains
+the source-specific conflicting values under `log.source.*`.
 
 ### Async configuration
 

@@ -2,9 +2,9 @@ import { ObserveModuleOptionsWithDefaults } from "../interfaces/observe-options.
 
 export const OTEL_BAGGAGE_KEY = "#otel.baggage";
 export const OTEL_TRACE_FLAGS_KEY = "#otel.trace_flags";
+export const OTEL_PARENT_SPAN_ID_KEY = "#otel.parent_span_id";
 
 type AttributeValue = string | number | boolean;
-type LogAttributeValue = AttributeValue | undefined;
 
 export interface OpenTelemetryLogSeverity {
   text: string;
@@ -22,7 +22,7 @@ const TRACEPARENT_PATTERN =
   /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})(?:-.+)?$/i;
 const HEX_32 = /^[0-9a-f]{32}$/i;
 const HEX_16 = /^[0-9a-f]{16}$/i;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function parseTraceparent(value: unknown): ParsedTraceparent | undefined {
   if (typeof value !== "string") {
@@ -33,22 +33,25 @@ export function parseTraceparent(value: unknown): ParsedTraceparent | undefined 
     return undefined;
   }
   const [, version, traceId, parentSpanId, traceFlags] = match;
+  const normalizedTraceId = traceId.toLowerCase();
+  const normalizedParentSpanId = parentSpanId.toLowerCase();
+  const normalizedTraceFlags = traceFlags.toLowerCase();
   const parts = value.trim().split("-");
   if (
     version.toLowerCase() === "ff" ||
     (version.toLowerCase() === "00" && parts.length !== 4) ||
     (version.toLowerCase() !== "00" &&
       (parts.length < 5 || parts.slice(4).some((part) => part.length === 0))) ||
-    traceId === "00000000000000000000000000000000" ||
-    parentSpanId === "0000000000000000"
+    normalizedTraceId === "00000000000000000000000000000000" ||
+    normalizedParentSpanId === "0000000000000000"
   ) {
     return undefined;
   }
   return {
-    traceId: traceId.toLowerCase(),
-    parentSpanId: parentSpanId.toLowerCase(),
-    traceFlags: traceFlags.toLowerCase(),
-    raw: `${version.toLowerCase()}-${traceId.toLowerCase()}-${parentSpanId.toLowerCase()}-${traceFlags.toLowerCase()}`,
+    traceId: normalizedTraceId,
+    parentSpanId: normalizedParentSpanId,
+    traceFlags: normalizedTraceFlags,
+    raw: `${version.toLowerCase()}-${normalizedTraceId}-${normalizedParentSpanId}-${normalizedTraceFlags}`,
   };
 }
 
@@ -67,7 +70,7 @@ export function parseBaggage(
     }
     const key = entry.slice(0, separator).trim();
     const rawValue = entry.slice(separator + 1).trim();
-    if (!key || !rawValue) {
+    if (!key) {
       continue;
     }
     try {
@@ -117,11 +120,7 @@ export function normalizeSpanIdForTraceparent(
     return undefined;
   }
   if (HEX_16.test(spanId)) {
-    return spanId.toLowerCase();
-  }
-  if (UUID.test(spanId)) {
-    const normalized = spanId.replaceAll("-", "").slice(16).toLowerCase();
-    return normalized === "0000000000000000" ? undefined : normalized;
+    return spanId === "0000000000000000" ? undefined : spanId.toLowerCase();
   }
   return undefined;
 }
@@ -200,13 +199,17 @@ export function getOpenTelemetryResourceAttributes(
 export function getOpenTelemetryLogAttributes(
   options: ObserveModuleOptionsWithDefaults,
   level?: string,
-): Record<string, LogAttributeValue> {
+): Record<string, AttributeValue> {
   const severity = toOpenTelemetryLogSeverity(level);
   return {
     ...getOpenTelemetryResourceAttributes(options),
     "log.iostream": "stdout",
-    "severity.text": severity?.text,
-    "severity.number": severity?.number,
+    ...(severity
+      ? {
+          "severity.text": severity.text,
+          "severity.number": severity.number,
+        }
+      : undefined),
   };
 }
 

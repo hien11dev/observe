@@ -19,6 +19,7 @@ import {
   extractPropagation,
   getOpenTelemetryResourceAttributes,
   OTEL_BAGGAGE_KEY,
+  OTEL_PARENT_SPAN_ID_KEY,
   OTEL_TRACE_FLAGS_KEY,
   toBaggageTags,
 } from "../utils/opentelemetry.util.js";
@@ -154,6 +155,10 @@ export class HttpObserveAgentService<Store extends Record<string, unknown>>
         (store as Map<string, unknown>).set(
           OTEL_TRACE_FLAGS_KEY,
           propagation.traceparent.traceFlags,
+        );
+        (store as Map<string, unknown>).set(
+          OTEL_PARENT_SPAN_ID_KEY,
+          propagation.traceparent.parentSpanId,
         );
       }
       if (propagation.baggage) {

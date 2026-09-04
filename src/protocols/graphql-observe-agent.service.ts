@@ -18,6 +18,7 @@ import {
   getOpenTelemetryResourceAttributes,
   extractPropagation,
   OTEL_BAGGAGE_KEY,
+  OTEL_PARENT_SPAN_ID_KEY,
   OTEL_TRACE_FLAGS_KEY,
   toBaggageTags,
 } from "../utils/opentelemetry.util.js";
@@ -381,9 +382,7 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
 
     const traceId =
       propagation.traceparent?.traceId ?? this.options.traceIdGenerator(info);
-    const store = new Map<KeyOf<Store>, any>(
-      this.asyncLocalStorage.getStore()?.entries() ?? [],
-    );
+    const store = new Map<KeyOf<Store>, any>();
     store.set(this.options.traceIdKey, traceId);
     this.asyncLocalStorage.enterWith(store);
     this.applyPropagationToStore(store as Map<string, unknown>, propagation);
@@ -634,6 +633,10 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
     }
     if (propagation.traceparent) {
       store.set(OTEL_TRACE_FLAGS_KEY, propagation.traceparent.traceFlags);
+      store.set(
+        OTEL_PARENT_SPAN_ID_KEY,
+        propagation.traceparent.parentSpanId,
+      );
     }
     if (propagation.baggage) {
       store.set(OTEL_BAGGAGE_KEY, propagation.baggage);

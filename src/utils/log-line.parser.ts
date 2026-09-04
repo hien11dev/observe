@@ -147,7 +147,11 @@ function readCandidateMessage(record: Record<string, unknown>): unknown {
 }
 
 function readLevel(record: Record<string, unknown>): string | undefined {
-  const level = record.level ?? record.severityText ?? record.severity_text;
+  const level =
+    record.level ??
+    record.severity ??
+    record.severityText ??
+    record.severity_text;
   return typeof level === "string" ? level.toLowerCase() : undefined;
 }
 

@@ -198,13 +198,34 @@ export class StdoutForwarderService implements OnModuleInit, OnModuleDestroy {
       // which is also before the buffer truncates oversized lines. That order is
       // deliberate: truncating first would cut a long secret in half and ship
       // the surviving half.
-      attributes: {
-        ...attributes,
-        ...getOpenTelemetryLogAttributes(this.options, parsed.level),
-      },
+      attributes: mergeLogAttributes(
+        getOpenTelemetryLogAttributes(this.options, parsed.level),
+        attributes,
+      ),
       text: this.redactor
         ? this.redactor.redactMessage(parsed.message)
         : parsed.message,
     };
   }
+}
+
+function mergeLogAttributes(
+  generated: Record<string, string | number | boolean>,
+  source?: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!source) {
+    return generated;
+  }
+
+  const merged: Record<string, unknown> = {
+    ...source,
+    ...generated,
+  };
+  for (const [key, value] of Object.entries(source)) {
+    if (!(key in generated) || value === undefined || value === generated[key]) {
+      continue;
+    }
+    merged[`log.source.${key}`] = value;
+  }
+  return merged;
 }

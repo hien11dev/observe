@@ -46,7 +46,7 @@ describe("parseLogLine", () => {
     it("accepts common structured log aliases used by OTel/OpenObserve pipelines", () => {
       const parsed = parseLogLine(
         JSON.stringify({
-          severity_text: "WARN",
+          severity: "WARN",
           msg: "disk almost full",
           trace_id: "trace-1",
           span_id: "span-1",
