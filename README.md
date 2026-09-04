@@ -85,6 +85,91 @@ async function bootstrap() {
 bootstrap();
 ```
 
+## OpenTelemetry compatibility
+
+`@nestjs/observe` keeps its existing API and payload format, but now aligns the
+captured metadata with common OpenTelemetry conventions:
+
+- inbound `traceparent` is adopted before `x-request-id`
+- inbound `baggage` is preserved in the async context and can be forwarded
+- request and job snapshots include OTel-style tags such as
+  `service.name`, `service.version`, `deployment.environment`,
+  `http.request.method`, `http.response.status_code`, `rpc.system`,
+  `rpc.method`, and `messaging.destination.name`
+- forwarded logs preserve structured timestamps when present and add
+  OpenObserve/OTel-friendly attributes such as `service.name`,
+  `deployment.environment`, `log.iostream`, `severity.text`, and
+  `severity.number`
+- captured exceptions include `exception.type` and `exception.message`
+
+### Resource metadata
+
+```ts
+ObserveModule.forRoot({
+  appKey: process.env.OBSERVE_APP_KEY!,
+  appSecret: process.env.OBSERVE_APP_SECRET!,
+  serviceId: "orders-api-1",
+  serviceName: "orders-api",
+  serviceVersion: "1.2.3",
+  deploymentEnvironment: "production",
+  resourceAttributes: {
+    "service.namespace": "checkout",
+  },
+});
+```
+
+If omitted, `serviceName` defaults to `OTEL_SERVICE_NAME` and then `serviceId`;
+`deploymentEnvironment` defaults to `OTEL_DEPLOYMENT_ENVIRONMENT` and then
+`NODE_ENV`.
+
+### Forwarding W3C Trace Context
+
+```ts
+import { Injectable } from "@nestjs/common";
+import { TracerService } from "@nestjs/observe";
+
+@Injectable()
+export class OrdersClient {
+  constructor(private readonly tracer: TracerService) {}
+
+  async fetchOrder(id: string) {
+    const headers = this.tracer.currentPropagationHeaders();
+    return fetch(`https://orders.internal/${id}`, { headers });
+  }
+}
+```
+
+### Migration notes
+
+- Existing `traceId`, `serviceId`, and custom tags continue to work unchanged.
+- `traceparent` now takes precedence over `x-request-id` when both are present.
+- OTel-aligned metadata is added as tags for compatibility with existing
+  Observe ingestion payloads.
+- Log forwarding keeps the current payload shape (`text`, `level`, `traceId`,
+  `spanId`, `attributes`) and adds OTel-style resource/severity metadata inside
+  `attributes`.
+
+### Forwarding logs
+
+```ts
+ObserveModule.forRoot({
+  appKey: process.env.OBSERVE_APP_KEY!,
+  appSecret: process.env.OBSERVE_APP_SECRET!,
+  serviceId: "orders-api-1",
+  serviceName: "orders-api",
+  forwardLogs: true,
+});
+```
+
+When `forwardLogs` is enabled, structured JSON logs that already carry
+`timestamp`, `_timestamp`, `time`, `message`/`msg`, `trace_id`, or `span_id`
+are preserved and correlated as-is where possible, which makes them easier to
+query in OpenObserve-style log pipelines while staying compatible with the
+existing Observe collector payload.
+If a source log already sets keys such as `service.name` or `severity.text`,
+Observe keeps its process-level canonical values under those keys and retains
+the source-specific conflicting values under `log.source.*`.
+
 ### Async configuration
 
 `ObserveModule.forRootAsync()` resolves the options from the DI container, via

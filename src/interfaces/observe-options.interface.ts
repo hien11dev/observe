@@ -191,6 +191,25 @@ export interface ObserveOptions {
   serviceVersion?: string;
 
   /**
+   * OpenTelemetry `service.name` for traces emitted by this module.
+   *
+   * Defaults to `OTEL_SERVICE_NAME` when set, or `serviceId` otherwise.
+   */
+  serviceName?: string;
+
+  /**
+   * OpenTelemetry `deployment.environment` attached to emitted traces.
+   *
+   * Defaults to `OTEL_DEPLOYMENT_ENVIRONMENT` when set, or `NODE_ENV`.
+   */
+  deploymentEnvironment?: string;
+
+  /**
+   * Extra OpenTelemetry-style resource attributes attached to emitted traces.
+   */
+  resourceAttributes?: Record<string, string | number | boolean>;
+
+  /**
    * Interval in milliseconds at which the tracer submits traces to the Agent.
    * The default value is 5000 milliseconds (5 seconds).
    * @default 5000

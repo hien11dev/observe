@@ -9,11 +9,15 @@ import { HttpObserveAgentService } from "./http-observe-agent.service.js";
 describe("HttpObserveAgentService", () => {
   let startedTraces: Array<{
     traceId: string;
-    data: { attributes?: { originalUrl?: string } };
+    data: {
+      attributes?: { originalUrl?: string };
+      tags?: Record<string, string | number | boolean>;
+    };
   }>;
 
   const createService = (
     http: ObserveModuleOptionsWithDefaults["http"] = {},
+    overrides: Partial<ObserveModuleOptionsWithDefaults> = {},
   ) => {
     startedTraces = [];
     const registry = {
@@ -31,6 +35,8 @@ describe("HttpObserveAgentService", () => {
         traceIdKey: "traceId",
         traceIdGenerator: () => "trace-1",
         http,
+        serviceId: "svc-1",
+        ...overrides,
       } as unknown as ObserveModuleOptionsWithDefaults,
       registry,
       {} as ObserveAgentSharedBuffer,
@@ -38,9 +44,13 @@ describe("HttpObserveAgentService", () => {
     );
   };
 
-  const trace = (service: HttpObserveAgentService<any>, url: string) =>
+  const trace = (
+    service: HttpObserveAgentService<any>,
+    url: string,
+    headers: Record<string, unknown> = {},
+  ) =>
     service.startHttpRequestTracing(
-      { url, method: "GET", protocol: "http" },
+      { url, method: "GET", protocol: "http", headers },
       {},
       () => {},
     );
@@ -92,6 +102,79 @@ describe("HttpObserveAgentService", () => {
       expect(startedTraces[0].data.attributes?.originalUrl).toEqual(
         "/items?x=1",
       );
+    });
+
+    it("falls back without rewriting a non-path request target", () => {
+      const service = createService();
+
+      trace(service, "example.com:443");
+
+      expect(startedTraces[0].data.tags).toMatchObject({
+        "url.path": "example.com:443",
+      });
+    });
+
+    it("adopts W3C context and adds OTel semantic tags", () => {
+      const service = createService(
+        {},
+        {
+          serviceName: "orders-api",
+          serviceVersion: "1.2.3",
+          deploymentEnvironment: "test",
+        },
+      );
+
+      trace(service, "/items?x=1", {
+        traceparent:
+          "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        baggage: "tenant=acme",
+      });
+
+      expect(startedTraces[0]).toMatchObject({
+        traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+        data: {
+          tags: {
+            "span.kind": "server",
+            "http.request.method": "GET",
+            "url.path": "/items",
+            "url.query": "x=1",
+            "url.scheme": "http",
+            "service.name": "orders-api",
+            "service.version": "1.2.3",
+            "service.instance.id": "svc-1",
+            "deployment.environment": "test",
+            "baggage.tenant": "acme",
+          },
+        },
+      });
+    });
+
+    it("prefers traceparent over x-request-id when both are present", () => {
+      const service = createService();
+
+      trace(service, "/items?x=1", {
+        traceparent:
+          "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        "x-request-id": "legacy-request-id",
+      });
+
+      expect(startedTraces[0].traceId).toEqual(
+        "4bf92f3577b34da6a3ce929d0e0e4736",
+      );
+    });
+
+    it("normalizes the URL scheme tag", () => {
+      const service = createService();
+
+      service.startHttpRequestTracing(
+        { url: "/items", method: "GET", protocol: "http/1.1", headers: {} },
+        {},
+        () => {},
+      );
+
+      expect(startedTraces[0].data.tags).toMatchObject({
+        "url.scheme": "http",
+      });
     });
   });
 });

@@ -1,7 +1,7 @@
 import { IntrinsicException, Logger, RequestMethod } from "@nestjs/common";
 import { AsyncLocalStorage } from "async_hooks";
 import { activeSliceRecorder } from "../profiling/span-slice-recorder.js";
-import { randomUUID } from "crypto";
+import { randomBytes } from "crypto";
 import { JobSnapshot } from "../interfaces/index.js";
 import { RequestSnapshot } from "../interfaces/request-snapshot.interface.js";
 import { CreateObserveModuleOptions } from "../interfaces/observe-options.interface.js";
@@ -93,6 +93,13 @@ export class OperationTraceRegistry {
 
     if (typeof error?.constructor === "function") {
       result.cls = error.constructor.name;
+    }
+
+    result.tags = {
+      "exception.message": result.message,
+    };
+    if (result.cls) {
+      result.tags["exception.type"] = result.cls;
     }
 
     if (this.sourceContext !== false) {
@@ -208,6 +215,7 @@ export class OperationTraceRegistry {
     if ("userId" in opts && typeof opts.userId !== "undefined") {
       const requestSnapshot = snapshot as RequestSnapshot;
       requestSnapshot.userId = String(opts.userId);
+      this.setTag(requestSnapshot, "enduser.id", requestSnapshot.userId);
     }
 
     delete snapshot.startTimestamp; // Clean up to avoid confusion
@@ -219,6 +227,9 @@ export class OperationTraceRegistry {
           // If any root trace has an error, we mark the entire snapshot as having an error
           if (typeof trace.error === "object") {
             snapshot.error = trace.error;
+            if (trace.error.cls) {
+              this.setTag(snapshot, "error.type", trace.error.cls);
+            }
           }
           break; // No need to check further once an error is found
         }
@@ -296,6 +307,20 @@ export class OperationTraceRegistry {
       requestSnapshot.attributes = {};
     }
     requestSnapshot.attributes.statusCode = statusCode;
+    this.setTag(
+      snapshot,
+      "otel.status_code",
+      requestSnapshot.protocol === "http"
+        ? statusCode >= 500
+          ? "ERROR"
+          : "OK"
+        : statusCode >= 400
+          ? "ERROR"
+          : "OK",
+    );
+    if (requestSnapshot.protocol === "http") {
+      this.setTag(snapshot, "http.response.status_code", statusCode);
+    }
   }
 
   internalStartTraceStep(
@@ -310,7 +335,7 @@ export class OperationTraceRegistry {
     }
     snapshot.refsCounter += 1;
 
-    const newNodeId = randomUUID();
+    const newNodeId = generateSpanId();
     const startTime = performance.now();
 
     // Records which span owns the thread from here. A no-op unless continuous
@@ -446,6 +471,11 @@ export class OperationTraceRegistry {
       cursor as unknown as CompleteTraceEventNode;
 
     activeTrace.duration = duration;
+    this.setTag(
+      activeTrace,
+      "otel.status_code",
+      error || activeTrace.error ? "ERROR" : "OK",
+    );
 
     if (error && !activeTrace.error) {
       const isRootSpan = !parent;
@@ -560,14 +590,18 @@ export class OperationTraceRegistry {
       return;
     }
 
+    targetSpan.error = this.toErrorPayload(error);
+    this.setTag(targetSpan, "otel.status_code", "ERROR");
     if (!targetSpan.tags) {
       targetSpan.tags = {};
     }
-
-    // Merge tags
     Object.assign(targetSpan.tags, tags);
-
-    targetSpan.error = this.toErrorPayload(error);
+    if (targetSpan.error && typeof targetSpan.error === "object") {
+      targetSpan.error.tags = {
+        ...targetSpan.error.tags,
+        ...tags,
+      };
+    }
   }
 
   /**
@@ -656,7 +690,7 @@ export class OperationTraceRegistry {
     // reference, and JSON.stringify threw away the whole flush window.
     snapshot.refsCounter += 1;
 
-    const newNodeId = randomUUID();
+    const newNodeId = generateSpanId();
     const startTime = performance.now();
 
     // Same as internalStartTraceStep: without an enter, the exit issued on
@@ -732,4 +766,19 @@ export class OperationTraceRegistry {
       },
     );
   }
+
+  private setTag(
+    target: { tags?: Record<string, string | number | boolean> },
+    key: string,
+    value: string | number | boolean,
+  ): void {
+    if (!target.tags) {
+      target.tags = {};
+    }
+    target.tags[key] = value;
+  }
+}
+
+function generateSpanId(): string {
+  return randomBytes(8).toString("hex");
 }

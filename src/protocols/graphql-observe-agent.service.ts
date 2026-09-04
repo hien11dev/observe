@@ -7,10 +7,21 @@ import {
   RequestSnapshot,
 } from "../interfaces/index.js";
 import { ObserveModuleOptionsWithDefaults } from "../interfaces/observe-options.interface.js";
-import { CALLER_METADATA_KEY, OBSERVE_OPTIONS } from "../observe.constants.js";
+import {
+  CALLER_METADATA_KEY,
+  OBSERVE_OPTIONS,
+} from "../observe.constants.js";
 import { OperationTraceRegistry } from "../services/operation-trace.registry.js";
 import { TraceSamplerService } from "../services/trace-sampler.service.js";
 import { KeyOf } from "../types/key-of.type.js";
+import {
+  getOpenTelemetryResourceAttributes,
+  extractPropagation,
+  OTEL_BAGGAGE_KEY,
+  OTEL_PARENT_SPAN_ID_KEY,
+  OTEL_TRACE_FLAGS_KEY,
+  toBaggageTags,
+} from "../utils/opentelemetry.util.js";
 import {
   parseGraphQLOperation,
   toResolveInfoLike,
@@ -248,6 +259,11 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
     };
 
     const store = this.asyncLocalStorage.getStore();
+    const propagation = this.extractPropagationFromContext(ctx.context);
+    this.applyPropagationToStore(
+      store as Map<string, unknown> | undefined,
+      propagation,
+    );
     const traceId = store?.get(this.options.traceIdKey);
 
     if (traceId) {
@@ -259,7 +275,7 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
         ctx,
       );
     }
-    return this.startAsOperation(operationId, attributes, info, ctx);
+    return this.startAsOperation(operationId, attributes, info, ctx, propagation);
   }
 
   /**
@@ -321,7 +337,7 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
     this.applyAttributes(info, ctx.context);
     this.operationTraceRegistry.addGraphQLMetadataToTrace(traceId, {
       operationId,
-      tags: this.options.graphql?.tags,
+      tags: this.graphqlTags(info),
       attributes,
     });
     return this.openSpan(traceId, info, ctx, false);
@@ -355,6 +371,7 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
     attributes: RequestSnapshot["attributes"],
     info: GraphQLResolveInfoLike,
     ctx: GqlRequestStartContext,
+    propagation: ReturnType<typeof extractPropagation>,
   ): OperationState | undefined {
     const shouldCapture = this.traceSamplerService.shouldCapture("graphql", {
       operationId,
@@ -363,17 +380,22 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
       return undefined;
     }
 
-    const traceId = this.options.traceIdGenerator(info);
+    const traceId =
+      propagation.traceparent?.traceId ?? this.options.traceIdGenerator(info);
     const store = new Map<KeyOf<Store>, any>();
     store.set(this.options.traceIdKey, traceId);
     this.asyncLocalStorage.enterWith(store);
+    this.applyPropagationToStore(store as Map<string, unknown>, propagation);
 
     this.applyAttributes(info, ctx.context);
 
     this.operationTraceRegistry.startTrace(traceId, {
       protocol: GRAPHQL_PROTOCOL,
       operationId,
-      tags: this.options.graphql?.tags,
+      tags: {
+        ...getOpenTelemetryResourceAttributes(this.options),
+        ...this.graphqlTags(info),
+      },
       attributes,
     });
 
@@ -557,6 +579,67 @@ export class GraphQLObserveAgentService<Store extends Record<string, unknown>>
     }
     for (const [key, value] of Object.entries(attributes)) {
       store.set(key, value);
+    }
+  }
+
+  private currentBaggage(): Record<string, string> | undefined {
+    const baggage = this.asyncLocalStorage.getStore()?.get(OTEL_BAGGAGE_KEY);
+    return baggage && typeof baggage === "object"
+      ? (baggage as Record<string, string>)
+      : undefined;
+  }
+
+  private graphqlTags(
+    info: GraphQLResolveInfoLike,
+  ): Record<string, string | number | boolean> {
+    const tags: Record<string, string | number | boolean> = {
+      "span.kind": "server",
+      "graphql.operation.type":
+        info.operation?.operation ?? info.parentType.name.toLowerCase(),
+      ...toBaggageTags(this.currentBaggage()),
+      ...this.options.graphql?.tags,
+    };
+    const operationName = info.operation?.name?.value;
+    if (typeof operationName === "string" && operationName.length > 0) {
+      tags["graphql.operation.name"] = operationName;
+    }
+    return tags;
+  }
+
+  private extractPropagationFromContext(
+    context: unknown,
+  ): ReturnType<typeof extractPropagation> {
+    const carrier = context as {
+      req?: { headers?: Record<string, unknown> };
+      request?: { headers?: Record<string, unknown> };
+      connectionParams?: Record<string, unknown>;
+      extra?: { request?: { headers?: Record<string, unknown> } };
+    };
+    return extractPropagation({
+      headers:
+        carrier?.req?.headers ??
+        carrier?.request?.headers ??
+        carrier?.extra?.request?.headers ??
+        carrier?.connectionParams,
+    });
+  }
+
+  private applyPropagationToStore(
+    store: Map<string, unknown> | undefined,
+    propagation: ReturnType<typeof extractPropagation>,
+  ): void {
+    if (!store) {
+      return;
+    }
+    if (propagation.traceparent) {
+      store.set(OTEL_TRACE_FLAGS_KEY, propagation.traceparent.traceFlags);
+      store.set(
+        OTEL_PARENT_SPAN_ID_KEY,
+        propagation.traceparent.parentSpanId,
+      );
+    }
+    if (propagation.baggage) {
+      store.set(OTEL_BAGGAGE_KEY, propagation.baggage);
     }
   }
 }

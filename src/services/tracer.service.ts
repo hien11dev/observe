@@ -8,6 +8,13 @@ import { TraceSpanDelegate } from "../trace-span.delegate.js";
 import { KeyOf } from "../types/key-of.type.js";
 import { Path, PathValue } from "../types/path-value.type.js";
 import { CALLER_METADATA_KEY, OBSERVE_OPTIONS } from "../observe.constants.js";
+import {
+  baggageToHeader,
+  formatTraceparent,
+  OTEL_BAGGAGE_KEY,
+  OTEL_PARENT_SPAN_ID_KEY,
+  OTEL_TRACE_FLAGS_KEY,
+} from "../utils/opentelemetry.util.js";
 import { OperationTraceRegistry } from "./operation-trace.registry.js";
 
 @Injectable()
@@ -324,6 +331,64 @@ export class TracerService<
     const store = this.als.getStore();
     const traceId = store?.get(this.options.traceIdKey);
     return typeof traceId === "string" ? traceId : null;
+  }
+
+  /**
+   * The current W3C propagation headers, or an empty object outside a trace.
+   */
+  currentPropagationHeaders(): Record<string, string> {
+    const store = this.als.getStore();
+    const traceId = typeof store?.get(this.options.traceIdKey) === "string"
+      ? (store.get(this.options.traceIdKey) as string)
+      : undefined;
+    const spanId =
+      typeof store?.get(CALLER_METADATA_KEY) === "string"
+        ? (store.get(CALLER_METADATA_KEY) as string)
+        : typeof store?.get(OTEL_PARENT_SPAN_ID_KEY) === "string"
+          ? (store.get(OTEL_PARENT_SPAN_ID_KEY) as string)
+        : undefined;
+    const traceFlags =
+      typeof store?.get(OTEL_TRACE_FLAGS_KEY) === "string"
+        ? (store.get(OTEL_TRACE_FLAGS_KEY) as string)
+        : "01";
+    const baggage = store?.get(OTEL_BAGGAGE_KEY) as
+      | Record<string, string>
+      | undefined;
+
+    const headers: Record<string, string> = {};
+    const traceparent = formatTraceparent(traceId, spanId, traceFlags);
+    if (traceparent) {
+      headers.traceparent = traceparent;
+    }
+    const baggageHeader = baggageToHeader(baggage);
+    if (baggageHeader) {
+      headers.baggage = baggageHeader;
+    }
+    return headers;
+  }
+
+  /**
+   * The current W3C baggage items, or an empty object outside a trace.
+   */
+  currentBaggage(): Record<string, string> {
+    const store = this.als.getStore();
+    const baggage = store?.get(OTEL_BAGGAGE_KEY);
+    return baggage && typeof baggage === "object" ? { ...baggage } : {};
+  }
+
+  /**
+   * Sets a baggage item on the current trace context.
+   */
+  setBaggage(key: string, value: string): void {
+    const store = this.als.getStore();
+    if (!store) {
+      throw new Error(
+        'AsyncLocalStorage is not initialized. Ensure that you are using the "setBaggage" method within an async context.',
+      );
+    }
+    const baggage = this.currentBaggage();
+    baggage[key] = value;
+    store.set(OTEL_BAGGAGE_KEY, baggage);
   }
 
   /**

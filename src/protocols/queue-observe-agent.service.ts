@@ -14,6 +14,7 @@ import {
   describePeerLoadError,
   loadOptionalPeer,
 } from "../utils/optional-peer.util.js";
+import { getOpenTelemetryResourceAttributes } from "../utils/opentelemetry.util.js";
 
 /** The `ProcessorDecoratorService` surface this service patches, structurally typed. */
 interface ProcessorDecoratorServiceLike {
@@ -162,7 +163,20 @@ export class QueueObserveAgentService<Store extends Record<string, unknown>> {
 
           // setImmediate(() => {
           this.operationTraceRegistry.startTrace(traceId, {
-            tags: this.options.jobs?.tags,
+            tags: {
+              ...getOpenTelemetryResourceAttributes(this.options),
+              "span.kind": "consumer",
+              "messaging.system": "bullmq",
+              "messaging.operation": "process",
+              "messaging.destination.name": job.queueName,
+              ...(job.id !== undefined && job.id !== null
+                ? {
+                    "messaging.message.id":
+                      typeof job.id === "number" ? `${job.id}` : job.id,
+                  }
+                : undefined),
+              ...this.options.jobs?.tags,
+            },
             queueName: job.queueName,
             name: job.name,
             id: typeof job.id === "number" ? `${job.id}` : job.id,

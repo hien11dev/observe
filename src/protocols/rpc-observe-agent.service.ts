@@ -20,6 +20,14 @@ import {
   describePeerLoadError,
   loadOptionalPeer,
 } from "../utils/optional-peer.util.js";
+import {
+  extractPropagation,
+  getOpenTelemetryResourceAttributes,
+  OTEL_BAGGAGE_KEY,
+  OTEL_PARENT_SPAN_ID_KEY,
+  OTEL_TRACE_FLAGS_KEY,
+  toBaggageTags,
+} from "../utils/opentelemetry.util.js";
 
 /**
  * The `@nestjs/microservices` surface this agent reads, loaded on demand so
@@ -156,8 +164,23 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
     // identical object, one lookup fewer, and it is known to exist.
     const store = new Map<KeyOf<Store>, any>();
     this.asyncLocalStorage.run(store, () => {
-      const traceId = this.options.traceIdGenerator(ctx);
+      const propagation = extractPropagation(ctx);
+      const traceId =
+        propagation.traceparent?.traceId ?? this.options.traceIdGenerator(ctx);
       store.set(this.options.traceIdKey, traceId);
+      if (propagation.traceparent) {
+        (store as Map<string, unknown>).set(
+          OTEL_TRACE_FLAGS_KEY,
+          propagation.traceparent.traceFlags,
+        );
+        (store as Map<string, unknown>).set(
+          OTEL_PARENT_SPAN_ID_KEY,
+          propagation.traceparent.parentSpanId,
+        );
+      }
+      if (propagation.baggage) {
+        (store as Map<string, unknown>).set(OTEL_BAGGAGE_KEY, propagation.baggage);
+      }
 
       if (this.options.rpc?.setAttributes) {
         const attributes = this.options.rpc?.setAttributes?.(transportId, ctx);
@@ -183,7 +206,14 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
       this.operationTraceRegistry.startTrace(traceId, {
         protocol: this.toProtocolName(transportId),
         operationId: this.getOperationIdFromContext(ctx),
-        tags: this.options.rpc?.tags,
+        tags: {
+          ...getOpenTelemetryResourceAttributes(this.options),
+          "span.kind": "server",
+          "rpc.system": this.toProtocolName(transportId).toLowerCase(),
+          "rpc.method": this.getOperationIdFromContext(ctx),
+          ...toBaggageTags(propagation.baggage),
+          ...this.options.rpc?.tags,
+        },
       });
       done();
       // });
@@ -198,8 +228,23 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
     // As above: the map `run` is given, not looked back up.
     const store = new Map<KeyOf<Store>, any>();
     this.asyncLocalStorage.run(store, () => {
-      const traceId = this.options.traceIdGenerator(call);
+      const propagation = extractPropagation(call);
+      const traceId =
+        propagation.traceparent?.traceId ?? this.options.traceIdGenerator(call);
       store.set(this.options.traceIdKey, traceId);
+      if (propagation.traceparent) {
+        (store as Map<string, unknown>).set(
+          OTEL_TRACE_FLAGS_KEY,
+          propagation.traceparent.traceFlags,
+        );
+        (store as Map<string, unknown>).set(
+          OTEL_PARENT_SPAN_ID_KEY,
+          propagation.traceparent.parentSpanId,
+        );
+      }
+      if (propagation.baggage) {
+        (store as Map<string, unknown>).set(OTEL_BAGGAGE_KEY, propagation.baggage);
+      }
 
       if (this.options.grpc?.setAttributes) {
         const attributes = this.options.grpc?.setAttributes?.(call);
@@ -224,7 +269,14 @@ export class RpcObserveAgentService<Store extends Record<string, unknown>>
         this.operationTraceRegistry.startTrace(traceId, {
           protocol: this.toProtocolName(transportId),
           operationId: call.operationId,
-          tags: this.options.grpc?.tags,
+          tags: {
+            ...getOpenTelemetryResourceAttributes(this.options),
+            "span.kind": "server",
+            "rpc.system": "grpc",
+            "rpc.method": call.operationId,
+            ...toBaggageTags(propagation.baggage),
+            ...this.options.grpc?.tags,
+          },
         });
         done();
       }, 0);

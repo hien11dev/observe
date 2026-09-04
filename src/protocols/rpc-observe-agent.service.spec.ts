@@ -8,17 +8,35 @@ import { RpcObserveAgentService } from "./rpc-observe-agent.service.js";
  * present in this repository's own dependencies.
  */
 describe("RpcObserveAgentService", () => {
-  const options = { traceIdKey: "traceId" } as never;
+  let startedTraces: Array<{
+    traceId: string;
+    data: { tags?: Record<string, string | number | boolean> };
+  }>;
 
-  const createAgent = (subscribe: (...args: unknown[]) => unknown) =>
-    new RpcObserveAgentService(
+  const createAgent = (
+    subscribe: (...args: unknown[]) => unknown,
+    overrides: Record<string, unknown> = {},
+  ) => {
+    startedTraces = [];
+    const registry = {
+      startTrace: (traceId: string, data: unknown) => {
+        startedTraces.push({ traceId, data } as (typeof startedTraces)[number]);
+      },
+    };
+    return new RpcObserveAgentService(
       new AsyncLocalStorage<Map<string, any>>(),
-      options,
+      {
+        traceIdKey: "traceId",
+        traceIdGenerator: () => "generated-trace",
+        serviceId: "svc-1",
+        ...overrides,
+      } as never,
       { getRpcTargetRegistry: () => ({ subscribe }) } as never,
+      registry as never,
       {} as never,
-      {} as never,
-      {} as never,
+      { shouldCapture: () => true } as never,
     );
+  };
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -67,6 +85,45 @@ describe("RpcObserveAgentService", () => {
 
     it("answers 'unknown' rather than throwing when a custom context exposes no accessor", () => {
       expect(getOperationId({})).toBe("unknown");
+    });
+  });
+
+  it("adopts propagation metadata for gRPC calls", async () => {
+    const agent = createAgent(() => ({ unsubscribe: vi.fn() }), {
+      serviceName: "orders-api",
+    });
+    agent.onModuleInit();
+
+    agent.startGrpcRequestTracing(
+      (agent as unknown as { microservices: { Transport: { GRPC: number } } })
+        .microservices.Transport.GRPC,
+      {
+        operationId: "Orders.FindOne",
+        metadata: {
+          get: (key: string) =>
+            key === "traceparent"
+              ? "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+              : key === "baggage"
+                ? "tenant=acme"
+                : undefined,
+        },
+        request: {},
+      },
+      async () => undefined,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(startedTraces[0]).toMatchObject({
+      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+      data: {
+        tags: {
+          "rpc.system": "grpc",
+          "rpc.method": "Orders.FindOne",
+          "service.name": "orders-api",
+          "baggage.tenant": "acme",
+        },
+      },
     });
   });
 });

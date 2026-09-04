@@ -155,6 +155,10 @@ describe("ObserveModule: GraphQL collection", () => {
     expect(snapshot.attributes?.method).toBe("POST");
     expect(snapshot.attributes?.originalUrl).toBe("{ orders { id name } }");
     expect(snapshot.attributes?.statusCode).toBe(200);
+    expect(snapshot.tags).toMatchObject({
+      "graphql.operation.type": "query",
+      "span.kind": "server",
+    });
     expect(snapshot.traceId).toEqual(expect.any(String));
     expect(snapshot.duration).toBeGreaterThanOrEqual(0);
   });

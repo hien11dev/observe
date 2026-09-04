@@ -100,6 +100,31 @@ describe("ObserveModule: HTTP collection", () => {
     expect(snapshot.duration).toBeLessThan(5000);
   });
 
+  it("adopts incoming W3C trace context and OTel baggage", async () => {
+    await request(app.getHttpServer())
+      .get("/orders")
+      .set(
+        "traceparent",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      )
+      .set("baggage", "tenant=acme")
+      .expect(200);
+
+    const snapshot = await waitForSnapshot(
+      collected,
+      (item) => item.operationId === "/orders",
+    );
+
+    expect(snapshot.traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+    expect(snapshot.tags).toMatchObject({
+      "span.kind": "server",
+      "http.request.method": "GET",
+      "url.path": "/orders",
+      "baggage.tenant": "acme",
+      "service.instance.id": "00000000-0000-4000-8000-000000000000",
+    });
+  });
+
   it("keeps the route template rather than the concrete path", async () => {
     // The whole point of an operation id: /orders/1 and /orders/2 have to
     // aggregate together, or every id becomes its own endpoint in the charts.
