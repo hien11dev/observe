@@ -95,6 +95,13 @@ export class OperationTraceRegistry {
       result.cls = error.constructor.name;
     }
 
+    result.tags = {
+      "exception.message": result.message,
+    };
+    if (result.cls) {
+      result.tags["exception.type"] = result.cls;
+    }
+
     if (this.sourceContext !== false) {
       const settings = this.sourceContext === true ? {} : this.sourceContext;
       const codeFrames = collectCodeFrames(payload.stack, settings ?? {});
@@ -208,6 +215,7 @@ export class OperationTraceRegistry {
     if ("userId" in opts && typeof opts.userId !== "undefined") {
       const requestSnapshot = snapshot as RequestSnapshot;
       requestSnapshot.userId = String(opts.userId);
+      this.setTag(requestSnapshot, "enduser.id", requestSnapshot.userId);
     }
 
     delete snapshot.startTimestamp; // Clean up to avoid confusion
@@ -219,6 +227,9 @@ export class OperationTraceRegistry {
           // If any root trace has an error, we mark the entire snapshot as having an error
           if (typeof trace.error === "object") {
             snapshot.error = trace.error;
+            if (trace.error.cls) {
+              this.setTag(snapshot, "error.type", trace.error.cls);
+            }
           }
           break; // No need to check further once an error is found
         }
@@ -296,6 +307,20 @@ export class OperationTraceRegistry {
       requestSnapshot.attributes = {};
     }
     requestSnapshot.attributes.statusCode = statusCode;
+    this.setTag(
+      snapshot,
+      "otel.status_code",
+      requestSnapshot.protocol === "http"
+        ? statusCode >= 500
+          ? "ERROR"
+          : "OK"
+        : statusCode >= 400
+          ? "ERROR"
+          : "OK",
+    );
+    if (requestSnapshot.protocol === "http") {
+      this.setTag(snapshot, "http.response.status_code", statusCode);
+    }
   }
 
   internalStartTraceStep(
@@ -446,6 +471,11 @@ export class OperationTraceRegistry {
       cursor as unknown as CompleteTraceEventNode;
 
     activeTrace.duration = duration;
+    this.setTag(
+      activeTrace,
+      "otel.status_code",
+      error || activeTrace.error ? "ERROR" : "OK",
+    );
 
     if (error && !activeTrace.error) {
       const isRootSpan = !parent;
@@ -560,14 +590,18 @@ export class OperationTraceRegistry {
       return;
     }
 
+    targetSpan.error = this.toErrorPayload(error);
+    this.setTag(targetSpan, "otel.status_code", "ERROR");
     if (!targetSpan.tags) {
       targetSpan.tags = {};
     }
-
-    // Merge tags
     Object.assign(targetSpan.tags, tags);
-
-    targetSpan.error = this.toErrorPayload(error);
+    if (targetSpan.error && typeof targetSpan.error === "object") {
+      targetSpan.error.tags = {
+        ...targetSpan.error.tags,
+        ...tags,
+      };
+    }
   }
 
   /**
@@ -731,5 +765,16 @@ export class OperationTraceRegistry {
         }
       },
     );
+  }
+
+  private setTag(
+    target: { tags?: Record<string, string | number | boolean> },
+    key: string,
+    value: string | number | boolean,
+  ): void {
+    if (!target.tags) {
+      target.tags = {};
+    }
+    target.tags[key] = value;
   }
 }

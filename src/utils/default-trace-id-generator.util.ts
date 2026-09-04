@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { parseTraceparent } from "./opentelemetry.util.js";
 
 /**
  * What an inbound `x-request-id` must look like to be adopted as the trace id.
@@ -15,9 +16,12 @@ const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
 export function defaultTraceIdGenerator(req: unknown) {
   if (typeof req === "object" && req !== null && "headers" in req) {
-    const requestId = (req as { headers: Record<string, unknown> }).headers[
-      "x-request-id"
-    ];
+    const headers = (req as { headers: Record<string, unknown> }).headers;
+    const traceparent = parseTraceparent(headers["traceparent"]);
+    if (traceparent) {
+      return traceparent.traceId;
+    }
+    const requestId = headers["x-request-id"];
     if (typeof requestId === "string" && REQUEST_ID_PATTERN.test(requestId)) {
       return requestId;
     }

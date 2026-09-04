@@ -99,7 +99,13 @@ describe("ObserveModule: @nestjs/schedule collection", () => {
     expect(snapshot.id).toEqual(expect.any(String));
     expect(snapshot.duration).toBeGreaterThan(0);
     expect(snapshot.calledAt).toEqual(expect.any(String));
-    expect(snapshot.tags).toEqual({ environment: "test" });
+    expect(snapshot.tags).toMatchObject({
+      environment: "test",
+      "span.kind": "consumer",
+      "scheduler.type": "timeout",
+      "scheduler.job.name": "TasksService.nightlyReport",
+      "service.instance.id": "00000000-0000-4000-8000-000000000000",
+    });
 
     // The handler itself is the root span, and the provider it called into is
     // nested under it - the instance decorator saw the whole run.

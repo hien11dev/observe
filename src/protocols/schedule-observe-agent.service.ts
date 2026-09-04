@@ -13,6 +13,7 @@ import {
   describePeerLoadError,
   loadOptionalPeer,
 } from "../utils/optional-peer.util.js";
+import { getOpenTelemetryResourceAttributes } from "../utils/opentelemetry.util.js";
 
 /**
  * `@nestjs/schedule`'s metadata keys and scheduler-type enum, inlined so the
@@ -181,8 +182,8 @@ export class ScheduleObserveAgentService<
   private describeHandler(
     methodRef: ScheduledHandler,
     instance: object,
-  ): Pick<JobSnapshot, "queueName" | "name"> {
-    const schedulerType = Reflect.getMetadata(SCHEDULER_TYPE, methodRef) as
+  ): Pick<JobSnapshot, "queueName" | "name"> & { schedulerType: string } {
+    const rawSchedulerType = Reflect.getMetadata(SCHEDULER_TYPE, methodRef) as
       | number
       | undefined;
     const cronOptions = Reflect.getMetadata(
@@ -196,10 +197,14 @@ export class ScheduleObserveAgentService<
     const className = instance?.constructor?.name || "Object";
     const methodName = methodRef.name || "anonymous";
 
+    const schedulerType =
+      (rawSchedulerType !== undefined &&
+        SCHEDULER_TYPE_LABELS[rawSchedulerType]) ||
+      "schedule";
+
     return {
-      queueName:
-        (schedulerType !== undefined && SCHEDULER_TYPE_LABELS[schedulerType]) ||
-        "schedule",
+      schedulerType,
+      queueName: schedulerType,
       name: explicitName || `${className}.${methodName}`,
     };
   }
@@ -208,7 +213,10 @@ export class ScheduleObserveAgentService<
     methodRef: ScheduledHandler,
     instance: object,
   ): ScheduledHandler {
-    const { queueName, name } = this.describeHandler(methodRef, instance);
+    const { queueName, name, schedulerType } = this.describeHandler(
+      methodRef,
+      instance,
+    );
 
     return (...args: unknown[]) => {
       const hasOuterContext = this.asyncLocalStorage
@@ -249,11 +257,17 @@ export class ScheduleObserveAgentService<
         }
 
         this.operationTraceRegistry.startTrace(traceId, {
-          tags: this.options.jobs?.tags,
+          tags: {
+            ...getOpenTelemetryResourceAttributes(this.options),
+            "span.kind": "consumer",
+            "scheduler.type": schedulerType,
+            "scheduler.job.name": name,
+            ...this.options.jobs?.tags,
+          },
           queueName,
           name,
           id,
-        } as JobSnapshot);
+        } as unknown as JobSnapshot);
 
         const endTrace = (status: JobSnapshot["status"]) => {
           setTimeout(async () => {

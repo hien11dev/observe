@@ -425,11 +425,17 @@ describe("OperationTraceRegistry", () => {
 
       const snapshot = await registry.pluckSnapshot("e4");
       const root = snapshot!.traces[0] as {
-        error?: { message: string };
+        error?: { message: string; tags?: Record<string, unknown> };
         tags?: Record<string, unknown>;
       };
       expect(root.error).toMatchObject({ message: "captured" });
+      expect(root.error?.tags).toMatchObject({
+        "exception.type": "Error",
+        "exception.message": "captured",
+        orderId: "o-1",
+      });
       expect(root.tags).toMatchObject({ orderId: "o-1" });
+      expect(root.tags).toMatchObject({ "otel.status_code": "ERROR" });
     });
 
     it("ignores a capture against an unknown trace", () => {
@@ -504,6 +510,11 @@ describe("OperationTraceRegistry", () => {
       const snapshot = (await registry.pluckSnapshot("o1")) as RequestSnapshot;
       expect(snapshot.attributes?.statusCode).toBe(201);
       expect(snapshot.userId).toBe("u-9");
+      expect(snapshot.tags).toMatchObject({
+        "otel.status_code": "OK",
+        "http.response.status_code": 201,
+        "enduser.id": "u-9",
+      });
     });
 
     it("coerces a numeric user id to a string", async () => {
@@ -563,6 +574,7 @@ describe("OperationTraceRegistry", () => {
       // The snapshot carries no `attributes` at all on this path, so the 500
       // has to create them rather than assume they exist.
       expect(snapshot.attributes?.statusCode).toBe(500);
+      expect(snapshot.tags).toMatchObject({ "otel.status_code": "ERROR" });
     });
 
     it("reports an intrinsic error in the handled range", async () => {

@@ -15,6 +15,13 @@ import { OBSERVE_OPTIONS } from "../observe.constants.js";
 import { OperationTraceRegistry } from "../services/operation-trace.registry.js";
 import { TraceSamplerService } from "../services/trace-sampler.service.js";
 import { KeyOf } from "../types/key-of.type.js";
+import {
+  extractPropagation,
+  getOpenTelemetryResourceAttributes,
+  OTEL_BAGGAGE_KEY,
+  OTEL_TRACE_FLAGS_KEY,
+  toBaggageTags,
+} from "../utils/opentelemetry.util.js";
 import { redactUrlQuery } from "../utils/redact-url-query.js";
 
 /**
@@ -126,7 +133,12 @@ export class HttpObserveAgentService<Store extends Record<string, unknown>>
   }
 
   startHttpRequestTracing(
-    req: { url: string; method: string; protocol: string },
+    req: {
+      url: string;
+      method: string;
+      protocol: string;
+      headers?: Record<string, unknown>;
+    },
     res: unknown,
     done: () => void,
   ) {
@@ -134,8 +146,19 @@ export class HttpObserveAgentService<Store extends Record<string, unknown>>
     // identical object, one lookup fewer, and it is known to exist.
     const store = new Map<KeyOf<Store>, any>();
     this.asyncLocalStorage.run(store, () => {
-      const traceId = this.options.traceIdGenerator(req);
+      const propagation = extractPropagation(req);
+      const traceId =
+        propagation.traceparent?.traceId ?? this.options.traceIdGenerator(req);
       store.set(this.options.traceIdKey, traceId);
+      if (propagation.traceparent) {
+        (store as Map<string, unknown>).set(
+          OTEL_TRACE_FLAGS_KEY,
+          propagation.traceparent.traceFlags,
+        );
+      }
+      if (propagation.baggage) {
+        (store as Map<string, unknown>).set(OTEL_BAGGAGE_KEY, propagation.baggage);
+      }
 
       if (this.options.http?.setAttributes) {
         const attributes = this.options.http?.setAttributes?.(req);
@@ -167,10 +190,20 @@ export class HttpObserveAgentService<Store extends Record<string, unknown>>
       const originalUrl = this.queryParamsObfuscateRegex
         ? redactedUrl.replaceAll(this.queryParamsObfuscateRegex, "[REDACTED]")
         : redactedUrl;
+      const { path, query } = this.toUrlParts(originalUrl);
 
       this.operationTraceRegistry.startTrace(traceId, {
         protocol: req.protocol,
-        tags: this.options.http?.tags,
+        tags: {
+          ...getOpenTelemetryResourceAttributes(this.options),
+          "span.kind": "server",
+          "http.request.method": req.method,
+          "url.path": path,
+          "url.scheme": this.toUrlScheme(req.protocol),
+          ...(query ? { "url.query": query } : {}),
+          ...toBaggageTags(propagation.baggage),
+          ...this.options.http?.tags,
+        },
         attributes: {
           method: req.method,
           originalUrl,
@@ -275,6 +308,30 @@ export class HttpObserveAgentService<Store extends Record<string, unknown>>
       });
     }
     return false;
+  }
+
+  private toUrlParts(url: string): { path: string; query?: string } {
+    if (!url.startsWith("/")) {
+      return { path: url };
+    }
+    try {
+      const parsed = new URL(url, "http://localhost");
+      return {
+        path: parsed.pathname,
+        ...(parsed.search ? { query: parsed.search.slice(1) } : {}),
+      };
+    } catch {
+      return { path: url };
+    }
+  }
+
+  private toUrlScheme(protocol: string): string {
+    const normalized = protocol.trim().toLowerCase().replace(/:$/, "");
+    if (normalized === "http" || normalized === "https") {
+      return normalized;
+    }
+    const match = /^[a-z][a-z0-9+.-]*/i.exec(normalized);
+    return match?.[0].toLowerCase() ?? "http";
   }
 }
 

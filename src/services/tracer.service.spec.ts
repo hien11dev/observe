@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "async_hooks";
 import { ObserveAgentSharedBuffer } from "../agent/observe-agent.shared-buffer.js";
 import { CustomMetric } from "../interfaces/index.js";
+import { OTEL_BAGGAGE_KEY } from "../utils/opentelemetry.util.js";
 import { ObserveModuleOptionsWithDefaults } from "../interfaces/observe-options.interface.js";
 import { CALLER_METADATA_KEY } from "../observe.constants.js";
 import { OperationTraceRegistry } from "./operation-trace.registry.js";
@@ -156,6 +157,48 @@ describe("TracerService", () => {
 
     it("returns null when the store exists but carries no trace id", () => {
       expect(als.run(new Map(), () => tracer.currentTraceId())).toBeNull();
+    });
+  });
+
+  describe("currentPropagationHeaders", () => {
+    it("formats W3C traceparent and baggage from the active context", async () => {
+      const headers = await inTrace(
+        "123e4567-e89b-12d3-a456-426614174000",
+        async () => {
+          tracer.setBaggage("tenant", "acme");
+          return tracer.currentPropagationHeaders();
+        },
+      );
+
+      expect(headers.baggage).toBe("tenant=acme");
+      expect(headers.traceparent).toMatch(
+        /^00-123e4567e89b12d3a456426614174000-[0-9a-f]{16}-01$/,
+      );
+    });
+
+    it("returns an empty object outside a trace", () => {
+      expect(tracer.currentPropagationHeaders()).toEqual({});
+    });
+  });
+
+  describe("baggage", () => {
+    it("returns a copy of the current baggage", () => {
+      const store = new Map<string, unknown>([
+        [OTEL_BAGGAGE_KEY, { tenant: "acme" }],
+      ]);
+
+      const baggage = als.run(store, () => tracer.currentBaggage());
+      baggage.tenant = "mutated";
+
+      expect((store.get(OTEL_BAGGAGE_KEY) as Record<string, string>).tenant).toBe(
+        "acme",
+      );
+    });
+
+    it("fails clearly outside any async context", () => {
+      expect(() => tracer.setBaggage("tenant", "acme")).toThrow(
+        /AsyncLocalStorage is not initialized/,
+      );
     });
   });
 

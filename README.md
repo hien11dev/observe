@@ -85,6 +85,63 @@ async function bootstrap() {
 bootstrap();
 ```
 
+## OpenTelemetry compatibility
+
+`@nestjs/observe` keeps its existing API and payload format, but now aligns the
+captured metadata with common OpenTelemetry conventions:
+
+- inbound `traceparent` is adopted before `x-request-id`
+- inbound `baggage` is preserved in the async context and can be forwarded
+- request and job snapshots include OTel-style tags such as
+  `service.name`, `service.version`, `deployment.environment`,
+  `http.request.method`, `http.response.status_code`, `rpc.system`,
+  `rpc.method`, and `messaging.destination.name`
+- captured exceptions include `exception.type` and `exception.message`
+
+### Resource metadata
+
+```ts
+ObserveModule.forRoot({
+  appKey: process.env.OBSERVE_APP_KEY!,
+  appSecret: process.env.OBSERVE_APP_SECRET!,
+  serviceId: "orders-api-1",
+  serviceName: "orders-api",
+  serviceVersion: "1.2.3",
+  deploymentEnvironment: "production",
+  resourceAttributes: {
+    "service.namespace": "checkout",
+  },
+});
+```
+
+If omitted, `serviceName` defaults to `OTEL_SERVICE_NAME` and then `serviceId`;
+`deploymentEnvironment` defaults to `OTEL_DEPLOYMENT_ENVIRONMENT` and then
+`NODE_ENV`.
+
+### Forwarding W3C Trace Context
+
+```ts
+import { Injectable } from "@nestjs/common";
+import { TracerService } from "@nestjs/observe";
+
+@Injectable()
+export class OrdersClient {
+  constructor(private readonly tracer: TracerService) {}
+
+  async fetchOrder(id: string) {
+    const headers = this.tracer.currentPropagationHeaders();
+    return fetch(`https://orders.internal/${id}`, { headers });
+  }
+}
+```
+
+### Migration notes
+
+- Existing `traceId`, `serviceId`, and custom tags continue to work unchanged.
+- `traceparent` now takes precedence over `x-request-id` when both are present.
+- OTel-aligned metadata is added as tags for compatibility with existing
+  Observe ingestion payloads.
+
 ### Async configuration
 
 `ObserveModule.forRootAsync()` resolves the options from the DI container, via
