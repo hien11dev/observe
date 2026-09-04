@@ -4,6 +4,12 @@ export const OTEL_BAGGAGE_KEY = "#otel.baggage";
 export const OTEL_TRACE_FLAGS_KEY = "#otel.trace_flags";
 
 type AttributeValue = string | number | boolean;
+type LogAttributeValue = AttributeValue | undefined;
+
+export interface OpenTelemetryLogSeverity {
+  text: string;
+  number: number;
+}
 
 export interface ParsedTraceparent {
   traceId: string;
@@ -189,6 +195,42 @@ export function getOpenTelemetryResourceAttributes(
     ...resource,
     ...options.resourceAttributes,
   };
+}
+
+export function getOpenTelemetryLogAttributes(
+  options: ObserveModuleOptionsWithDefaults,
+  level?: string,
+): Record<string, LogAttributeValue> {
+  const severity = toOpenTelemetryLogSeverity(level);
+  return {
+    ...getOpenTelemetryResourceAttributes(options),
+    "log.iostream": "stdout",
+    "severity.text": severity?.text,
+    "severity.number": severity?.number,
+  };
+}
+
+export function toOpenTelemetryLogSeverity(
+  level: string | undefined,
+): OpenTelemetryLogSeverity | undefined {
+  switch (level?.toLowerCase()) {
+    case "verbose":
+      return { text: "TRACE", number: 1 };
+    case "debug":
+      return { text: "DEBUG", number: 5 };
+    case "log":
+    case "info":
+      return { text: "INFO", number: 9 };
+    case "warn":
+    case "warning":
+      return { text: "WARN", number: 13 };
+    case "error":
+      return { text: "ERROR", number: 17 };
+    case "fatal":
+      return { text: "FATAL", number: 21 };
+    default:
+      return undefined;
+  }
 }
 
 function carriersFrom(

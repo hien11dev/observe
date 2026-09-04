@@ -10,6 +10,7 @@ import { ObserveAgentSharedBuffer } from "../agent/observe-agent.shared-buffer.j
 import { ObserveModuleOptionsWithDefaults } from "../interfaces/index.js";
 import { parseLogLine } from "../utils/log-line.parser.js";
 import { LogRedactor } from "../utils/log-redactor.js";
+import { getOpenTelemetryLogAttributes } from "../utils/opentelemetry.util.js";
 import { CALLER_METADATA_KEY, OBSERVE_OPTIONS } from "../observe.constants.js";
 
 /**
@@ -175,27 +176,32 @@ export class StdoutForwarderService implements OnModuleInit, OnModuleDestroy {
     // The line's own trace id wins: it was captured when the log was written,
     // whereas the async store is read now and may already have moved on.
     const traceId = parsed.traceId ?? contextTraceId;
+    const attributes = this.redactor
+      ? this.redactor.redactAttributes(parsed.attributes)
+      : parsed.attributes;
 
     return {
-      timestamp: Date.now(),
+      timestamp: parsed.timestamp ?? Date.now(),
       traceId,
       // Only meaningful alongside the store's own trace. When the line carried a
       // trace id of its own and it disagrees, the store has moved on to a
       // different operation and its span belongs to that one - naming it here
       // would file the line under a span it was never written inside.
       spanId:
-        traceId === contextTraceId
+        parsed.spanId ??
+        (traceId === contextTraceId
           ? store?.get(CALLER_METADATA_KEY)
-          : undefined,
+          : undefined),
       level: parsed.level,
       context: parsed.context,
       // Redaction happens here, before the entry reaches the shared buffer -
       // which is also before the buffer truncates oversized lines. That order is
       // deliberate: truncating first would cut a long secret in half and ship
       // the surviving half.
-      attributes: this.redactor
-        ? this.redactor.redactAttributes(parsed.attributes)
-        : parsed.attributes,
+      attributes: {
+        ...attributes,
+        ...getOpenTelemetryLogAttributes(this.options, parsed.level),
+      },
       text: this.redactor
         ? this.redactor.redactMessage(parsed.message)
         : parsed.message,

@@ -43,6 +43,26 @@ describe("parseLogLine", () => {
       expect(parsed.attributes).not.toHaveProperty("level");
     });
 
+    it("accepts common structured log aliases used by OTel/OpenObserve pipelines", () => {
+      const parsed = parseLogLine(
+        JSON.stringify({
+          severity_text: "WARN",
+          msg: "disk almost full",
+          trace_id: "trace-1",
+          span_id: "span-1",
+          _timestamp: "2026-09-04T06:00:00.000Z",
+        }),
+      );
+
+      expect(parsed).toMatchObject({
+        level: "warn",
+        message: "disk almost full",
+        traceId: "trace-1",
+        spanId: "span-1",
+        timestamp: Date.parse("2026-09-04T06:00:00.000Z"),
+      });
+    });
+
     it("does not treat arbitrary JSON as a log record", () => {
       const line = JSON.stringify([1, 2, 3]);
 

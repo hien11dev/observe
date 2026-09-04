@@ -96,6 +96,10 @@ captured metadata with common OpenTelemetry conventions:
   `service.name`, `service.version`, `deployment.environment`,
   `http.request.method`, `http.response.status_code`, `rpc.system`,
   `rpc.method`, and `messaging.destination.name`
+- forwarded logs preserve structured timestamps when present and add
+  OpenObserve/OTel-friendly attributes such as `service.name`,
+  `deployment.environment`, `log.iostream`, `severity.text`, and
+  `severity.number`
 - captured exceptions include `exception.type` and `exception.message`
 
 ### Resource metadata
@@ -141,6 +145,27 @@ export class OrdersClient {
 - `traceparent` now takes precedence over `x-request-id` when both are present.
 - OTel-aligned metadata is added as tags for compatibility with existing
   Observe ingestion payloads.
+- Log forwarding keeps the current payload shape (`text`, `level`, `traceId`,
+  `spanId`, `attributes`) and adds OTel-style resource/severity metadata inside
+  `attributes`.
+
+### Forwarding logs
+
+```ts
+ObserveModule.forRoot({
+  appKey: process.env.OBSERVE_APP_KEY!,
+  appSecret: process.env.OBSERVE_APP_SECRET!,
+  serviceId: "orders-api-1",
+  serviceName: "orders-api",
+  forwardLogs: true,
+});
+```
+
+When `forwardLogs` is enabled, structured JSON logs that already carry
+`timestamp`, `_timestamp`, `time`, `message`/`msg`, `trace_id`, or `span_id`
+are preserved and correlated as-is where possible, which makes them easier to
+query in OpenObserve-style log pipelines while staying compatible with the
+existing Observe collector payload.
 
 ### Async configuration
 

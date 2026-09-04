@@ -14,10 +14,12 @@
  */
 
 export interface ParsedLogLine {
+  timestamp?: number;
   level?: string;
   context?: string;
   message: string;
   traceId?: string;
+  spanId?: string;
   attributes?: Record<string, unknown>;
 }
 /**
@@ -49,10 +51,21 @@ const TRACE_ID_SUFFIX_PATTERN = /\s*Trace ID:\s*(\S+)\s*$/;
  */
 const STRUCTURED_KEYS = new Set([
   "level",
+  "severity",
+  "severityText",
+  "severity_text",
   "message",
+  "msg",
+  "body",
   "context",
+  "trace_id",
   "traceId",
+  "span_id",
+  "spanId",
   "timestamp",
+  "_timestamp",
+  "time",
+  "ts",
   "pid",
 ]);
 
@@ -86,7 +99,7 @@ function parseStructured(line: string): ParsedLogLine | null {
   const record = parsed as Record<string, unknown>;
   // A JSON line with no message is some other program's output that happens to
   // be JSON - not a log we can model, so let the text path have it.
-  if (typeof record.message !== "string") {
+  if (typeof readCandidateMessage(record) !== "string") {
     return null;
   }
 
@@ -95,10 +108,14 @@ function parseStructured(line: string): ParsedLogLine | null {
   );
 
   return {
-    level: typeof record.level === "string" ? record.level : undefined,
+    timestamp: parseTimestamp(
+      record.timestamp ?? record._timestamp ?? record.time ?? record.ts,
+    ),
+    level: readLevel(record),
     context: typeof record.context === "string" ? record.context : undefined,
-    traceId: typeof record.traceId === "string" ? record.traceId : undefined,
-    message: record.message,
+    traceId: readString(record.traceId ?? record.trace_id),
+    spanId: readString(record.spanId ?? record.span_id),
+    message: readMessage(record),
     attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
   };
 }
@@ -118,4 +135,37 @@ function parseNestText(line: string): ParsedLogLine | null {
     traceId: traceIdMatch?.[1],
     message: traceIdMatch ? rest.slice(0, traceIdMatch.index).trimEnd() : rest,
   };
+}
+
+function readMessage(record: Record<string, unknown>): string {
+  const message = readCandidateMessage(record);
+  return typeof message === "string" ? message : "";
+}
+
+function readCandidateMessage(record: Record<string, unknown>): unknown {
+  return record.message ?? record.msg ?? record.body;
+}
+
+function readLevel(record: Record<string, unknown>): string | undefined {
+  const level = record.level ?? record.severityText ?? record.severity_text;
+  return typeof level === "string" ? level.toLowerCase() : undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function parseTimestamp(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    return undefined;
+  }
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

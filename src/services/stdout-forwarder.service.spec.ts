@@ -161,6 +161,50 @@ describe("StdoutForwarderService", () => {
         (buffer.entries[0] as unknown as { timestamp: number }).timestamp,
       ).toEqual(expect.any(Number));
     });
+
+    it("preserves a structured log timestamp when one is present", () => {
+      const service = build();
+
+      write(
+        service,
+        `${JSON.stringify({
+          level: "info",
+          message: "structured",
+          timestamp: "2026-09-04T06:00:00.000Z",
+        })}\n`,
+      );
+
+      expect(
+        (buffer.entries[0] as unknown as { timestamp: number }).timestamp,
+      ).toBe(Date.parse("2026-09-04T06:00:00.000Z"));
+    });
+
+    it("adds additive OTel/OpenObserve-friendly log metadata", () => {
+      const service = build({
+        serviceId: "svc-1",
+        serviceName: "orders-api",
+        serviceVersion: "1.2.3",
+        deploymentEnvironment: "test",
+      });
+
+      write(
+        service,
+        `${JSON.stringify({
+          severity_text: "WARN",
+          msg: "slow query",
+        })}\n`,
+      );
+
+      expect(buffer.entries[0].attributes).toMatchObject({
+        "service.name": "orders-api",
+        "service.instance.id": "svc-1",
+        "service.version": "1.2.3",
+        "deployment.environment": "test",
+        "log.iostream": "stdout",
+        "severity.text": "WARN",
+        "severity.number": 13,
+      });
+    });
   });
 
   describe("trace attribution", () => {
@@ -194,6 +238,32 @@ describe("StdoutForwarderService", () => {
       // The line's id was captured when the log was written; the store is read
       // now and may already have moved on.
       expect(buffer.entries[0].traceId).toBe("trace-on-line");
+    });
+
+    it("prefers trace and span ids carried on a structured line itself", () => {
+      const service = build();
+
+      als.run(
+        new Map([
+          [TRACE_ID_KEY, "trace-from-store"],
+          [CALLER_METADATA_KEY, "span-from-store"],
+        ]),
+        () =>
+          write(
+            service,
+            `${JSON.stringify({
+              level: "info",
+              message: "done",
+              trace_id: "trace-on-line",
+              span_id: "span-on-line",
+            })}\n`,
+          ),
+      );
+
+      expect(buffer.entries[0]).toMatchObject({
+        traceId: "trace-on-line",
+        spanId: "span-on-line",
+      });
     });
 
     it("drops the span id when the line belongs to a different trace", () => {
